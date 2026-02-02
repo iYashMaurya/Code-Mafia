@@ -1,6 +1,6 @@
 package main
-
 import (
+	"encoding/json"
 	"log"
 	"sync"
 )
@@ -44,8 +44,27 @@ func (h *Hub) run() {
 					delete(room.clients, client)
 					close(client.send)
 					
+					// Get player info before removing
+					room.mu.RLock()
+					player := room.players[client.PlayerID]
+					room.mu.RUnlock()
+					
 					// Remove player
 					delete(room.players, client.PlayerID)
+					
+					// Broadcast disconnection message
+					if player != nil && player.Username != "" {
+						disconnectMsg := Message{
+							Type: "CHAT",
+							Data: map[string]interface{}{
+								"username": "System",
+								"text":     player.Username + " has disconnected",
+								"system":   true,
+							},
+						}
+						msgData, _ := json.Marshal(disconnectMsg)
+						room.broadcast <- msgData
+					}
 					
 					// Broadcast updated player list
 					room.broadcastPlayerList()

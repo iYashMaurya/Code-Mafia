@@ -144,7 +144,7 @@ func (r *Room) startGame() {
 		r.mu.Unlock()
 		r.broadcastGameState()
 
-		// Start game timer (45 Seconds) - Issue #2
+		// Start game timer (45 Seconds)
 		if r.gameTimer != nil {
 			r.gameTimer.Stop()
 		}
@@ -169,7 +169,7 @@ func (r *Room) startDiscussion() {
 	r.votes = make(map[string]string) // Reset votes
 	r.broadcastGameState()
 
-	// Start 10 Second Voting Timer - Issue #4
+	// Start 10 Second Voting Timer
 	if r.voteTimer != nil {
 		r.voteTimer.Stop()
 	}
@@ -248,7 +248,7 @@ func (r *Room) finalizeVoting() {
 		}
 	}
 
-	// Decision Logic: Issue #4
+	// Decision Logic
 	var eliminatedID string
 	if !tie && candidate != "SKIP" && maxVotes > 0 {
 		if player, exists := r.players[candidate]; exists {
@@ -321,12 +321,6 @@ func (r *Room) finalizeVoting() {
 }
 
 func (r *Room) endGame(reason string) {
-	// If lock is already held by caller (like finalizeVoting), we need careful handling.
-	// But simple endGame calls usually come from Timer or explicit checks.
-	// We'll assume endGame is called as a separate goroutine or when lock is available.
-	// NOTE: If called from inside a locked function, do not lock again.
-	// For safety in this snippet, we assume it's called independently.
-	
 	r.phase = PhaseEnd
 	msg := Message{
 		Type: "GAME_ENDED",
@@ -427,31 +421,49 @@ func (r *Room) broadcastPlayerList() {
 func (h *Hub) handleYjsConnection(w http.ResponseWriter, r *http.Request, conn *websocket.Conn) {
 	roomID := r.URL.Query().Get("room")
 	room := h.getRoom(roomID)
-	if room != nil {
+	
+	if room == nil {
+		log.Printf("Room %s not found for Yjs connection", roomID)
+		conn.Close()
+		return
+	}
+	
+	room.mu.Lock()
+	room.yjsClients[conn] = true
+	room.mu.Unlock()
+	
+	log.Printf("Yjs client connected to room %s", roomID)
+
+	defer func() {
 		room.mu.Lock()
-		room.yjsClients[conn] = true
+		delete(room.yjsClients, conn)
 		room.mu.Unlock()
+		conn.Close()
+		log.Printf("Yjs client disconnected from room %s", roomID)
+	}()
 
-		defer func() {
-			room.mu.Lock()
-			delete(room.yjsClients, conn)
-			room.mu.Unlock()
-			conn.Close()
-		}()
-
-		for {
-			messageType, message, err := conn.ReadMessage()
-			if err != nil {
-				break
+	for {
+		messageType, message, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("Yjs websocket error: %v", err)
 			}
-			// Broadcast raw binary to other Yjs clients in this room
-			room.mu.RLock()
-			for client := range room.yjsClients {
-				if client != conn {
-					client.WriteMessage(messageType, message)
-				}
-			}
-			room.mu.RUnlock()
+			break
 		}
+		
+		// Broadcast raw binary to other Yjs clients in this room
+		room.mu.RLock()
+		for client := range room.yjsClients {
+			if client != conn {
+				// Use goroutine to avoid blocking on slow clients
+				go func(c *websocket.Conn) {
+					c.SetWriteDeadline(time.Now().Add(writeWait))
+					if err := c.WriteMessage(messageType, message); err != nil {
+						log.Printf("Error broadcasting Yjs message: %v", err)
+					}
+				}(client)
+			}
+		}
+		room.mu.RUnlock()
 	}
 }

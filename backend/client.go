@@ -181,6 +181,11 @@ func (c *Client) handleMessage(message []byte) {
 			if username, ok := data["username"].(string); ok {
 				c.Username = username
 				room.addPlayer(c.PlayerID, username)
+				
+				// First broadcast the updated player list to ALL clients (including this one)
+				room.broadcastPlayerList()
+				
+				// Then send the SELF message to this specific client
 				room.mu.RLock()
 				player := room.players[c.PlayerID]
 				room.mu.RUnlock()
@@ -192,7 +197,6 @@ func (c *Client) handleMessage(message []byte) {
 
 				payload, _ := json.Marshal(selfMsg)
 				c.send <- payload
-				room.broadcastPlayerList()
 			}
 		}
 
