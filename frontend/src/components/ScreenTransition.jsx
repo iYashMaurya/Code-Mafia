@@ -13,29 +13,29 @@ export default function ScreenTransition({ phase, children }) {
       // const audio = new Audio('/sounds/airlock.mp3');
       // audio.play();
 
-      // Wait for doors to close before changing phase
+      // Wait for doors to fully close (800ms) before changing phase
       setTimeout(() => {
         setDisplayPhase(phase);
       }, 800);
 
-      // Reset transition state after doors open
+      // Wait for doors to fully open (800ms close + 800ms open) before ending transition
       setTimeout(() => {
         setIsTransitioning(false);
       }, 1600);
     }
-  }, [phase]);
+  }, [phase, displayPhase]);
 
   const doorVariants = {
     closed: {
       x: 0,
       transition: {
-        duration: 0.6,
+        duration: 0.8,
         ease: [0.76, 0, 0.24, 1],
       },
     },
     open: {
       transition: {
-        duration: 0.6,
+        duration: 0.8,
         ease: [0.76, 0, 0.24, 1],
       },
     },
@@ -43,12 +43,12 @@ export default function ScreenTransition({ phase, children }) {
 
   return (
     <div className="relative w-full h-full">
-      {/* Content */}
+      {/* Content - only changes when doors are fully closed */}
       <AnimatePresence mode="wait">
         <motion.div
           key={displayPhase}
           initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
+          animate={{ opacity: isTransitioning ? 0 : 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.3 }}
         >
