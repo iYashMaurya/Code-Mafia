@@ -22,23 +22,23 @@ export default function EndGame({ reason, impostorId }) {
       case 'CIVILIAN_WIN_VOTE':
         return {
           title: '🎉 CREWMATES WIN',
-          subtitle: 'IMPOSTOR has been eliminated!',
-          message: 'The crew successfully identified and voted out the IMPOSTOR!',
+          subtitle: 'IMPOSTER has been eliminated!',
+          message: 'The crew successfully identified and voted out the IMPOSTER!',
           color: 'green'
         };
       
-      case 'IMPOSTOR_WIN':
+      case 'IMPOSTER_WIN':
         return {
-          title: '💀 IMPOSTOR WINS',
+          title: '💀 IMPOSTER WINS',
           subtitle: 'All crewmates eliminated!',
-          message: 'The IMPOSTOR has sabotaged the mission!',
+          message: 'The IMPOSTER has sabotaged the mission!',
           color: 'red'
         };
       
-      case 'IMPOSTOR_WIN_TIMEOUT':
+      case 'IMPOSTER_WIN_TIMEOUT':
         return {
           title: '⏰ TIME\'S UP',
-          subtitle: 'IMPOSTOR wins!',
+          subtitle: 'IMPOSTER wins!',
           message: 'The crew ran out of time to fix the satellite!',
           color: 'red'
         };
@@ -115,10 +115,10 @@ export default function EndGame({ reason, impostorId }) {
             {winInfo.message}
           </p>
 
-          {/* Reveal IMPOSTOR */}
+          {/* Reveal IMPOSTER */}
           {impostor && (
             <div className="mt-6 p-4 bg-red-100 border-3 border-red-500">
-              <p className="font-pixel text-sm mb-2 text-red-600">THE IMPOSTOR WAS:</p>
+              <p className="font-pixel text-sm mb-2 text-red-600">THE IMPOSTER WAS:</p>
               <div className="flex items-center justify-center gap-3">
                 <Ship type={getShipType(playerList.indexOf(impostor))} size="lg" />
                 <span className="font-game text-3xl text-gray-900">
@@ -151,7 +151,7 @@ export default function EndGame({ reason, impostorId }) {
                     {player.username}
                   </p>
                   <p className={`font-pixel text-xs ${
-                    player.role === 'IMPOSTOR' ? 'text-red-600' : 'text-green-600'
+                    player.role === 'IMPOSTER' ? 'text-red-600' : 'text-green-600'
                   }`}>
                     {player.role}
                   </p>

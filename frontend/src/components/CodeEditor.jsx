@@ -1,20 +1,22 @@
-// Add these to CodeEditor.jsx - Enhanced with Sabotage Support
-
 import React, { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { useGame } from '../context/GameContext';
-import { useTranslation } from '../utils/translations';
 import { motion, AnimatePresence } from 'framer-motion';
 import Starfield from './Starfield';
-import Ship, { getShipType } from './Ship';
-import { CheckCircle2, XCircle, Zap, Radio, Clock, Loader2, Terminal, AlertTriangle, Snowflake, Bug } from 'lucide-react';
+import { Clock, Loader2, AlertTriangle, Snowflake } from 'lucide-react';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { MonacoBinding } from 'y-monaco';
 
+// Import modular UI components
+import TaskPanel from './game/TaskPanel';
+import ControlPanel from './game/ControlPanel';
+import SabotagePanel from './game/SabotagePanel';
+import ChatPanel from './game/ChatPanel';
+import PlayersList from './game/PlayerList';
+
 export default function CodeEditor({ onEmergency }) {
   const { state } = useGame();
-  const { t } = useTranslation(state.language);
   const editorRef = useRef(null);
   const [chatMessage, setChatMessage] = useState('');
   const chatEndRef = useRef(null);
@@ -25,35 +27,32 @@ export default function CodeEditor({ onEmergency }) {
   const yjsBindingRef = useRef(null);
   const yjsDocRef = useRef(null);
 
-  // SABOTAGE STATE (NEW)
+  // SABOTAGE STATE
   const [isFrozen, setIsFrozen] = useState(false);
   const [sabotageType, setSabotageType] = useState(null);
   const [freezeTimeLeft, setFreezeTimeLeft] = useState(0);
 
   const playerList = Object.values(state.players || {});
-  const alivePlayers = playerList.filter(p => p.isAlive);
-  const eliminatedPlayers = playerList.filter(p => p.isEliminated);
-  const isImpostor = state.role === 'IMPOSTOR';
-
+  const isImpostor = state.role === 'IMPOSTER';
   const isTerminalBusy = state.isTerminalBusy;
   const currentRunner = state.currentRunner;
   const terminalLogs = state.terminalLogs;
   const isMyTest = state.currentRunnerID === state.playerId;
-  
   const currentStage = state.currentStage;
   const timerSeconds = state.timerSeconds;
   const tasksComplete = state.tasksComplete;
 
-  // Scroll effects
+  // Auto-scroll chat
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    requestAnimationFrame(() => {
+      chatEndRef.current?.scrollIntoView({ 
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    });
   }, [state.messages]);
 
-  useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [terminalLogs]);
-
-  // SABOTAGE LISTENER (NEW)
+  // SABOTAGE LISTENER
   useEffect(() => {
     if (!state.ws) return;
 
@@ -70,7 +69,7 @@ export default function CodeEditor({ onEmergency }) {
           const duration = message.data.duration || 5000;
           setFreezeTimeLeft(Math.floor(duration / 1000));
           
-          // Countdown timer for visual feedback
+          // Countdown timer
           const countdownInterval = setInterval(() => {
             setFreezeTimeLeft(prev => {
               if (prev <= 1) {
@@ -81,7 +80,7 @@ export default function CodeEditor({ onEmergency }) {
             });
           }, 1000);
           
-          // Auto-unfreeze after duration
+          // Auto-unfreeze
           setTimeout(() => {
             setIsFrozen(false);
             setSabotageType(null);
@@ -89,7 +88,7 @@ export default function CodeEditor({ onEmergency }) {
           }, duration);
         }
 
-        // FREEZE END (backup in case of early end)
+        // FREEZE END
         if (message.type === 'SABOTAGE_ENDED' && message.data.type === 'FREEZE') {
           console.log('✅ FREEZE sabotage ended');
           setIsFrozen(false);
@@ -103,14 +102,12 @@ export default function CodeEditor({ onEmergency }) {
           
           const malware = message.data.malware;
           
-          // Inject malware at top of code
           if (editorRef.current) {
             const currentCode = editorRef.current.getValue();
             const newCode = malware + currentCode;
             editorRef.current.setValue(newCode);
           }
           
-          // Flash red effect
           setSabotageType('CORRUPT');
           setTimeout(() => setSabotageType(null), 2000);
         }
@@ -123,14 +120,17 @@ export default function CodeEditor({ onEmergency }) {
     return () => state.ws?.removeEventListener('message', handleSabotage);
   }, [state.ws]);
 
-  // Yjs initialization (same as before)
+  // Yjs initialization
   useEffect(() => {
     if (!state.roomId || !editorReady || !editorRef.current || !state.task) {
       return;
     }
 
+    // Cleanup previous stage
     if (yjsProviderRef.current) {
-      console.log('🧹 Cleaning up previous Yjs connection');
+      const prevStage = yjsDocRef.current?.getText('monaco').toString();
+      console.log(`🧹 Cleanup Stage ${currentStage - 1} (${prevStage?.length || 0} chars)`);
+      
       if (yjsBindingRef.current) {
         yjsBindingRef.current.destroy();
         yjsBindingRef.current = null;
@@ -147,6 +147,11 @@ export default function CodeEditor({ onEmergency }) {
     }
 
     console.log('🔄 Initializing Yjs for Stage', currentStage);
+
+    const model = editorRef.current.getModel();
+    if (model) {
+      model.setValue('');
+    }
 
     const doc = new Y.Doc();
     yjsDocRef.current = doc;
@@ -166,7 +171,6 @@ export default function CodeEditor({ onEmergency }) {
     yjsProviderRef.current = provider;
 
     const yText = doc.getText('monaco');
-    
     let templateLoaded = false;
     
     provider.on('sync', (isSynced) => {
@@ -185,8 +189,8 @@ export default function CodeEditor({ onEmergency }) {
       }
     }, 500);
 
-    const model = editorRef.current.getModel();
-    if (!model) {
+    const editorModel = editorRef.current.getModel();
+    if (!editorModel) {
       console.error('❌ Monaco model not found!');
       return;
     }
@@ -194,7 +198,7 @@ export default function CodeEditor({ onEmergency }) {
     console.log('🔗 Creating Monaco binding for Stage', currentStage);
     const binding = new MonacoBinding(
       yText,
-      model,
+      editorModel,
       new Set([editorRef.current]),
       provider.awareness
     );
@@ -216,13 +220,11 @@ export default function CodeEditor({ onEmergency }) {
         yjsBindingRef.current.destroy();
         yjsBindingRef.current = null;
       }
-      
       if (yjsProviderRef.current) {
         yjsProviderRef.current.disconnect();
         yjsProviderRef.current.destroy();
         yjsProviderRef.current = null;
       }
-      
       if (yjsDocRef.current) {
         yjsDocRef.current.destroy();
         yjsDocRef.current = null;
@@ -230,7 +232,7 @@ export default function CodeEditor({ onEmergency }) {
     };
   }, [state.roomId, editorReady, state.task?.id, currentStage, state.playerId, state.username]);
 
-  // Update editor read-only state based on elimination AND freeze
+  // Update editor read-only state
   useEffect(() => {
     if (!editorRef.current) return;
 
@@ -270,7 +272,6 @@ export default function CodeEditor({ onEmergency }) {
     }
   };
 
-  // SABOTAGE HANDLERS (NEW)
   const handleSabotage = (type) => {
     if (!isImpostor) return;
     
@@ -322,7 +323,7 @@ export default function CodeEditor({ onEmergency }) {
     <div className="min-h-screen relative">
       <Starfield />
       
-      {/* FREEZE SABOTAGE OVERLAY (NEW) */}
+      {/* FREEZE SABOTAGE OVERLAY */}
       <AnimatePresence>
         {isFrozen && (
           <motion.div
@@ -353,7 +354,7 @@ export default function CodeEditor({ onEmergency }) {
         )}
       </AnimatePresence>
 
-      {/* CORRUPT FLASH (NEW) */}
+      {/* CORRUPT FLASH */}
       <AnimatePresence>
         {sabotageType === 'CORRUPT' && (
           <motion.div
@@ -366,7 +367,7 @@ export default function CodeEditor({ onEmergency }) {
         )}
       </AnimatePresence>
       
-      {/* Top Banner */}
+      {/* Top Banner - Compilation in Progress */}
       <AnimatePresence>
         {isTerminalBusy && !isMyTest && (
           <motion.div
@@ -386,9 +387,10 @@ export default function CodeEditor({ onEmergency }) {
       </AnimatePresence>
       
       <div className="relative z-10 p-4">
-        {/* Header with Timer and Controls - same as before */}
+        {/* Header with Timer and Controls */}
         <div className="flex justify-between items-center mb-4">
           <div className="flex gap-4 items-center">
+            {/* Stage Progress */}
             <div className="panel-space-sm px-6 py-3">
               <div className="flex items-center gap-3">
                 <span className="font-pixel text-xl text-gray-900">
@@ -411,7 +413,7 @@ export default function CodeEditor({ onEmergency }) {
               </div>
             </div>
 
-            {/* Timer with better visibility */}
+            {/* Timer */}
             <motion.div
               className="panel-space-sm px-6 py-3 flex items-center gap-3"
               style={{
@@ -444,6 +446,7 @@ export default function CodeEditor({ onEmergency }) {
               )}
             </motion.div>
             
+            {/* Spectator Badge */}
             {state.isEliminated && (
               <motion.div
                 initial={{ scale: 0 }}
@@ -457,6 +460,7 @@ export default function CodeEditor({ onEmergency }) {
             )}
           </div>
 
+          {/* Emergency Meeting Button */}
           <motion.button
             onClick={onEmergency}
             disabled={state.isEliminated}
@@ -468,147 +472,44 @@ export default function CodeEditor({ onEmergency }) {
           </motion.button>
         </div>
 
+        {/* Main Grid Layout */}
         <div className="grid grid-cols-4 gap-4 h-[calc(100vh-120px)]">
+          {/* Left Sidebar */}
           <div className="col-span-1 flex flex-col gap-4">
-            {/* IMPOSTOR SABOTAGE PANEL (ENHANCED) */}
+            {/* Impostor or Civilian Panel */}
             {isImpostor ? (
-              <motion.div
-                className="panel-space flex-1"
-                initial={{ x: -50, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-              >
-                <h3 className="font-pixel text-lg mb-4 text-red-600">SABOTAGE</h3>
-                <div className="space-y-3">
-                  <button
-                    onClick={() => handleSabotage('FREEZE')}
-                    disabled={isFrozen}
-                    className={`w-full btn-space red text-sm flex items-center justify-center gap-2 ${
-                      isFrozen ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                  >
-                    <Snowflake className="w-4 h-4" />
-                    Jam Comms (5s)
-                  </button>
-                  <button
-                    onClick={() => handleSabotage('CORRUPT')}
-                    className="w-full btn-space red text-sm flex items-center justify-center gap-2"
-                  >
-                    <Bug className="w-4 h-4" />
-                    Inject Malware
-                  </button>
-                </div>
-                
-                <div className="mt-4 p-3 bg-red-100 border-2 border-red-500 rounded">
-                  <p className="font-pixel text-xs text-red-800 mb-2">IMPOSTOR TIPS:</p>
-                  <p className="font-game text-sm text-gray-800">
-                    • Jam: Freezes typing for 5s
-                    <br />
-                    • Corrupt: Adds code errors
-                  </p>
-                </div>
-              </motion.div>
+              <SabotagePanel 
+                onSabotage={handleSabotage} 
+                isFrozen={isFrozen} 
+              />
             ) : (
-              /* CIVILIAN PANEL - same as before */
-              <motion.div
-                className="panel-space flex-1"
-                initial={{ x: -50, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-              >
-                <h3 className="font-pixel text-sm mb-4 text-green-600">
-                  {getStageTitle(currentStage)}
-                </h3>
-                
-                <button
-                  onClick={handleRunTests}
-                  disabled={isTerminalBusy || state.isEliminated || isFrozen}
-                  className={`btn-space green w-full text-sm flex items-center justify-center gap-2 ${
-                    isTerminalBusy || state.isEliminated || isFrozen ? 'opacity-50 cursor-not-allowed' : ''
-                  }`}
-                >
-                  {isTerminalBusy ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      {isMyTest ? 'Testing...' : `${currentRunner} testing...`}
-                    </>
-                  ) : isFrozen ? (
-                    <>
-                      <Snowflake className="w-4 h-4" />
-                      Systems Frozen
-                    </>
-                  ) : (
-                    <>
-                      <Terminal className="w-4 h-4" />
-                      Run Tests
-                    </>
-                  )}
-                </button>
-
-                {/* Terminal Output */}
-                <div className="mt-4 bg-black border-4 border-brown-dark p-3 h-64 overflow-y-auto font-mono text-xs">
-                  {terminalLogs.length === 0 ? (
-                    <div className="text-green-400">$ Stage {currentStage} ready...</div>
-                  ) : (
-                    terminalLogs.map((log, i) => (
-                      <div key={i} className="text-green-400 mb-1">
-                        {log}
-                      </div>
-                    ))
-                  )}
-                  <div ref={terminalEndRef} />
-                </div>
-              </motion.div>
+              <ControlPanel
+                stageTitle={getStageTitle(currentStage)}
+                onRunTests={handleRunTests}
+                isBusy={isTerminalBusy}
+                isFrozen={isFrozen}
+                isEliminated={state.isEliminated}
+                runnerName={currentRunner}
+                isMyTest={isMyTest}
+                terminalLogs={terminalLogs}
+                terminalEndRef={terminalEndRef}
+                currentStage={currentStage}
+              />
             )}
 
-            {/* Players List - same as before */}
-            <div className="panel-space flex-shrink-0">
-              <h3 className="font-pixel text-sm mb-3 text-gray-900">PLAYERS</h3>
-              
-              <div className="space-y-2">
-                <p className="font-game text-lg text-green-600">ALIVE</p>
-                {alivePlayers.map((player) => (
-                  <div key={player.id} className="flex items-center gap-2">
-                    <Ship type={getShipType(playerList.indexOf(player))} size="sm" />
-                    <span className="font-game text-sm text-gray-900">
-                      {player.username}
-                      {player.id === state.playerId && ' (You)'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {eliminatedPlayers.length > 0 && (
-                <div className="space-y-2 mt-4">
-                  <p className="font-game text-lg text-red-600">ELIMINATED</p>
-                  {eliminatedPlayers.map((player) => (
-                    <div key={player.id} className="flex items-center gap-2 opacity-50">
-                      <Ship type={getShipType(playerList.indexOf(player))} size="sm" />
-                      <span className="font-game text-sm line-through text-gray-600">
-                        {player.username}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {/* Players List */}
+            <PlayersList 
+              players={state.players} 
+              currentPlayerId={state.playerId} 
+            />
           </div>
 
+          {/* Main Content Area */}
           <div className="col-span-3 flex flex-col gap-4">
             {/* Task Description */}
-            <motion.div
-              className="panel-space"
-              initial={{ y: -50, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              key={state.task?.id}
-            >
-              <h3 className="font-pixel text-xl mb-2 text-gray-900">
-                {state.task?.title || 'Loading...'}
-              </h3>
-              <p className="font-game text-lg text-gray-700">
-                {state.task?.description || 'Waiting for task data...'}
-              </p>
-            </motion.div>
+            <TaskPanel task={state.task} />
 
-            {/* Code Editor with freeze overlay */}
+            {/* Code Editor */}
             <div className="flex-1 border-4 border-brown-dark overflow-hidden shadow-pixel relative">
               {isFrozen && (
                 <div className="absolute inset-0 z-10 bg-blue-900 bg-opacity-50 flex items-center justify-center">
@@ -636,49 +537,16 @@ export default function CodeEditor({ onEmergency }) {
               />
             </div>
 
-            {/* Chat - same as before */}
-            <div className="panel-space h-48 flex flex-col">
-              <h3 className="font-pixel text-sm mb-3 text-gray-900">CHAT</h3>
-              
-              <div className="flex-1 overflow-y-auto mb-3 space-y-2 min-h-0">
-                {state.messages.map((msg, index) => (
-                  <div key={index} className="chat-message-space">
-                    {msg.system ? (
-                      <span className="font-game text-sm italic text-gray-600">{msg.text}</span>
-                    ) : (
-                      <>
-                        <span className="font-game text-sm font-bold text-orange">
-                          {msg.username}:
-                        </span>
-                        <span className="font-game text-sm ml-2 text-gray-900">{msg.text}</span>
-                      </>
-                    )}
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-
-              {!state.isEliminated && (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={chatMessage}
-                    onChange={(e) => setChatMessage(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                    placeholder="Type..."
-                    className="input-space flex-1 text-sm py-1"
-                    disabled={isFrozen}
-                  />
-                  <button
-                    onClick={handleSendMessage}
-                    disabled={isFrozen}
-                    className={`btn-space green text-xs px-4 ${isFrozen ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    SEND
-                  </button>
-                </div>
-              )}
-            </div>
+            {/* Chat Panel */}
+            <ChatPanel
+              messages={state.messages}
+              chatMessage={chatMessage}
+              onMessageChange={(e) => setChatMessage(e.target.value)}
+              onSendMessage={handleSendMessage}
+              isEliminated={state.isEliminated}
+              isFrozen={isFrozen}
+              chatEndRef={chatEndRef}
+            />
           </div>
         </div>
       </div>

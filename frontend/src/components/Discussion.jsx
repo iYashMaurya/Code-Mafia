@@ -113,7 +113,7 @@ export default function Discussion({ onVote }) {
             <div className="col-span-2">
               <div className="panel-space">
                 <h2 className="font-pixel text-2xl text-center mb-4 text-gray-900">
-                  WHO IS THE IMPOSTOR?
+                  WHO IS THE IMPOSTER?
                 </h2>
 
                 {/* Player Grid - Stacked Vertically */}

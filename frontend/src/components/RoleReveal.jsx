@@ -34,7 +34,7 @@ export default function RoleReveal() {
               : '0 0 20px #ef4444, 0 0 40px #dc2626'
           }}
         >
-          {isCivilian ? "CREWMATE" : "IMPOSTOR"}
+          {isCivilian ? "CREWMATE" : "IMPOSTER"}
         </motion.h1>
 
         {/* Description Panel */}
@@ -45,7 +45,7 @@ export default function RoleReveal() {
           className="panel-space max-w-2xl mx-auto"
         >
           <p className="font-game text-3xl leading-relaxed text-gray-900">
-            {isCivilian ? "CREWMATE" : "IMPOSTOR" }
+            {isCivilian ? "CREWMATE" : "IMPOSTER" }
           </p>
         </motion.div>
 

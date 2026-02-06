@@ -20,7 +20,7 @@ const translations = {
     
     // Roles
     'role.civilian': 'CIVILIAN',
-    'role.impostor': 'IMPOSTOR',
+    'role.impostor': 'IMPOSTER',
     'role.civilianDesc': 'Fix the bugs and complete the code before round 4 ends!',
     'role.impostorDesc': 'Sabotage the code without getting caught! Make the code fail by round 4.',
     'role.starting': 'Game starting soon...',
@@ -37,7 +37,7 @@ const translations = {
     'game.spectator': 'You are spectating',
     
     // Discussion
-    'discussion.title': 'WHO IS THE IMPOSTOR?',
+    'discussion.title': 'WHO IS THE IMPOSTER?',
     'discussion.vote': 'Vote to eliminate a player or skip',
     'discussion.eliminate': 'ELIMINATE',
     'discussion.skip': 'SKIP VOTE',

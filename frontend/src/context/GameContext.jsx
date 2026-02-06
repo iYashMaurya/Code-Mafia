@@ -16,13 +16,13 @@ const initialState = {
   roomId: null,
   players: {},
   votes: {},
-  votesStatus: {}, // FIX #2: Track who has voted (not who they voted for)
+  votesStatus: {},
   
   // Multi-Stage Game State
   phase: 'LOBBY',
-  currentStage: 0,        // 0=lobby, 1=task1, 2=task2, 3=task3
-  timerSeconds: 60,       // Global countdown
-  tasksComplete: {},      // {1: true, 2: false, 3: false}
+  currentStage: 0,
+  timerSeconds: 60,
+  tasksComplete: {},
   role: null,
   isEliminated: false,
   
@@ -60,7 +60,6 @@ function gameReducer(state, action) {
       return { ...state, username: action.payload };
 
     case 'UPDATE_VOTES':
-      // FIX #2: Store vote status (who has voted)
       return { ...state, votesStatus: action.payload.hasVoted || {} };
     
     case 'SET_LANGUAGE':
@@ -87,10 +86,10 @@ function gameReducer(state, action) {
     
     // Multi-Stage Actions
     case 'SET_GAME_STATE':
-    console.log('🔧 [Reducer] SET_GAME_STATE action received');
-    console.log('   Payload:', action.payload);
-    
-    const { 
+      console.log('🔧 [Reducer] SET_GAME_STATE action received');
+      console.log('   Payload:', action.payload);
+      
+      const { 
         phase, 
         players, 
         task, 
@@ -99,15 +98,15 @@ function gameReducer(state, action) {
         tasksComplete,
         testRunning,
         testRunner 
-    } = action.payload;
-    
-    const currentPlayer = players?.[state.playerId];
-    
-    console.log('   New phase:', phase);
-    console.log('   Current player role:', currentPlayer?.role);
-    console.log('   Current stage:', currentStage);
-    
-    const newState = {
+      } = action.payload;
+      
+      const currentPlayer = players?.[state.playerId];
+      
+      console.log('   New phase:', phase);
+      console.log('   Current player role:', currentPlayer?.role);
+      console.log('   Current stage:', currentStage);
+      
+      const newState = {
         ...state,
         phase: phase || state.phase,
         players: players || state.players,
@@ -119,13 +118,13 @@ function gameReducer(state, action) {
         isEliminated: currentPlayer?.isEliminated || state.isEliminated,
         isTerminalBusy: testRunning || false,
         currentRunner: testRunner || null,
-    };
-    
-    console.log('   New state phase:', newState.phase);
-    console.log('   New state role:', newState.role);
-    console.log('✅ [Reducer] State updated');
-    
-    return newState;
+      };
+      
+      console.log('   New state phase:', newState.phase);
+      console.log('   New state role:', newState.role);
+      console.log('✅ [Reducer] State updated');
+      
+      return newState;
     
     case 'SYNC_TIMER':
       return {
@@ -139,6 +138,7 @@ function gameReducer(state, action) {
         isTransitioning: true,
         transitionFrom: action.payload.fromStage,
         transitionTo: action.payload.toStage,
+        terminalLogs: [],  // ✅ FIX #10: Clear logs on transition
       };
     
     case 'TRANSITION_COMPLETE':
@@ -149,7 +149,7 @@ function gameReducer(state, action) {
         transitionTo: null,
       };
     
-    // Test Execution Actions
+    // ✅ FIX #10: Limit terminal logs
     case 'TEST_LOCKED':
       return {
         ...state,
@@ -157,7 +157,7 @@ function gameReducer(state, action) {
         currentRunner: action.payload.runner,
         currentRunnerID: action.payload.runnerID,
         terminalLogs: [
-          ...state.terminalLogs,
+          ...state.terminalLogs.slice(-50),  // ✅ Keep last 50 only
           `🔒 ${action.payload.runner} is running Stage ${action.payload.stage} diagnostics...`,
         ],
       };
@@ -172,7 +172,7 @@ function gameReducer(state, action) {
         currentRunner: null,
         currentRunnerID: null,
         terminalLogs: [
-          ...state.terminalLogs,
+          ...state.terminalLogs.slice(-50),  // ✅ Keep last 50 only
           `${passed ? '✅' : '❌'} Stage ${stage} test ${passed ? 'PASSED' : 'FAILED'}`,
           passed ? `🚀 Advancing to Stage ${stage + 1}...` : '🔄 Try again!',
         ],
@@ -185,7 +185,7 @@ function gameReducer(state, action) {
         currentRunner: null,
         currentRunnerID: null,
         terminalLogs: [
-          ...state.terminalLogs,
+          ...state.terminalLogs.slice(-50),  // ✅ Keep last 50 only
           `⚠️ Test cancelled: ${action.payload.reason}`,
         ],
       };
@@ -194,7 +194,7 @@ function gameReducer(state, action) {
       return {
         ...state,
         terminalLogs: [
-          ...state.terminalLogs,
+          ...state.terminalLogs.slice(-50),  // ✅ Keep last 50 only
           `❌ ${action.payload.message}`,
           `⏳ ${action.payload.runner} is currently running tests...`,
         ],
@@ -203,10 +203,11 @@ function gameReducer(state, action) {
     case 'CLEAR_TERMINAL':
       return { ...state, terminalLogs: [] };
     
+    // ✅ FIX #16: Limit chat messages too
     case 'ADD_MESSAGE':
       return {
         ...state,
-        messages: [...state.messages, action.payload],
+        messages: [...state.messages.slice(-100), action.payload],  // Keep last 100
       };
     
     case 'CLEAR_MESSAGES':

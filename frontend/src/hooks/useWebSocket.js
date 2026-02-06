@@ -24,6 +24,13 @@ export function useWebSocket(roomId) {
         console.log('📨 Received message:', message.type);
 
         switch (message.type) {
+          // ✅ FIX #3: Handle join rejection
+          case 'ERROR_ACCESS_DENIED':
+            console.log('🚫 Access denied:', message.data.reason);
+            alert(message.data.message || 'Cannot join this game - it has already started');
+            window.location.href = '/';
+            return;
+
           case 'INIT':
             console.log('🎯 INIT received - PlayerID:', message.data.playerID);
             dispatch({ type: 'SET_PLAYER_ID', payload: message.data.playerID });
@@ -60,25 +67,17 @@ export function useWebSocket(roomId) {
             break;
 
           case 'GAME_STATE':
-    console.log('=' .repeat(80));
-    console.log('🎮 GAME_STATE MESSAGE RECEIVED');
-    console.log('=' .repeat(80));
-    console.log('Full message data:', JSON.stringify(message.data, null, 2));
-    console.log('Phase:', message.data.phase);
-    console.log('Current Stage:', message.data.currentStage);
-    console.log('Timer Seconds:', message.data.timerSeconds);
-    console.log('Players:', Object.keys(message.data.players || {}).length);
-    console.log('Task:', message.data.task ? message.data.task.title : 'No task');
-    console.log('Test Running:', message.data.testRunning);
-    console.log('-'.repeat(80));
-    
-    console.log('🔄 Dispatching SET_GAME_STATE action...');
-    dispatch({ type: 'SET_GAME_STATE', payload: message.data });
-    console.log('✅ Dispatch complete');
-    console.log('=' .repeat(80));
-    break
+            console.log('=' .repeat(80));
+            console.log('🎮 GAME_STATE MESSAGE RECEIVED');
+            console.log('=' .repeat(80));
+            console.log('Phase:', message.data.phase);
+            console.log('Current Stage:', message.data.currentStage);
+            console.log('Timer Seconds:', message.data.timerSeconds);
+            console.log('-'.repeat(80));
+            
+            dispatch({ type: 'SET_GAME_STATE', payload: message.data });
+            break;
 
-          // Multi-stage events
           case 'SYNC_TIMER':
             console.log('⏱️ SYNC_TIMER:', message.data.timerSeconds, 'seconds');
             dispatch({ type: 'SYNC_TIMER', payload: message.data });
@@ -107,7 +106,18 @@ export function useWebSocket(roomId) {
             });
             break;
 
-          // Test execution events
+          // ✅ FIX #8: Handle "all votes in" message
+          case 'ALL_VOTES_IN':
+            console.log('✅ ALL_VOTES_IN:', message.data.message);
+            dispatch({
+              type: 'ADD_MESSAGE',
+              payload: {
+                text: message.data.message,
+                system: true
+              }
+            });
+            break;
+
           case 'TEST_LOCKED':
             console.log('🔒 TEST_LOCKED received - Stage:', message.data.stage);
             dispatch({ 
@@ -155,9 +165,18 @@ export function useWebSocket(roomId) {
             dispatch({ type: 'ADD_MESSAGE', payload: message.data });
             break;
 
+          // ✅ FIX #5: Handle combined GAME_ENDED message
           case 'GAME_ENDED':
             console.log('🏁 GAME_ENDED:', message.data.reason);
+            
+            // Update game state if provided
+            if (message.data.finalState) {
+              dispatch({ type: 'SET_GAME_STATE', payload: message.data.finalState });
+            }
+            
+            // Set phase to GAME_OVER
             dispatch({ type: 'SET_PHASE', payload: 'GAME_OVER' });
+            
             dispatch({ 
               type: 'ADD_MESSAGE', 
               payload: { 
@@ -167,22 +186,45 @@ export function useWebSocket(roomId) {
             });
             break;
 
+          // ✅ FIX #7: Handle generic errors from server
+          case 'ERROR':
+            console.error('❌ Server error:', message.data.message);
+            dispatch({
+              type: 'ADD_MESSAGE',
+              payload: {
+                text: 'Error: ' + message.data.message,
+                system: true
+              }
+            });
+            break;
+
+          // ✅ FIX #9: Handle host migration
+          case 'NEW_HOST_ASSIGNED':
+            console.log('👑 NEW_HOST_ASSIGNED:', message.data.newHostName);
+            dispatch({
+              type: 'ADD_MESSAGE',
+              payload: {
+                text: `👑 ${message.data.newHostName} is now the host`,
+                system: true
+              }
+            });
+            // Force player list update to show new host status
+            break;
+
           default:
             console.warn('⚠️ Unknown message type:', message.type);
         }
 
         console.log('📊 Current state after message:', {
-    phase: state.phase,
-    currentStage: state.currentStage,
-    role: state.role,
-    playerId: state.playerId
-});
+          phase: state.phase,
+          currentStage: state.currentStage,
+          role: state.role,
+          playerId: state.playerId
+        });
       } catch (error) {
         console.error('❌ Error parsing message:', error);
       }
     };
-
-
 
     ws.onerror = (error) => {
       console.error('❌ WebSocket error:', error);
