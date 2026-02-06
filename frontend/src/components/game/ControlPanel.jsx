@@ -29,7 +29,7 @@ export default function ControlPanel({
         {isBusy ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin" />
-            {isMyTest ? 'Testing...' : `${runnerName} testing...`}
+            {isMyTest ? 'Testing...' : `Someone testing...`}
           </>
         ) : isFrozen ? (
           <>

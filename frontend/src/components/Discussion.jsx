@@ -1,16 +1,14 @@
 'use i18n';
 import React, { useState, useEffect, useRef } from 'react';
 import { useGame } from '../context/GameContext';
-// import { useTranslation } from '../utils/translations';
 import { motion } from 'framer-motion';
 import Starfield from './Starfield';
 import Ship, { getShipType } from './Ship';
 
 export default function Discussion({ onVote }) {
   const { state, dispatch } = useGame();
-  // const { t } = useTranslation(state.language);
   const [selectedTarget, setSelectedTarget] = useState(null);
-  const [timeLeft, setTimeLeft] = useState(30); // FIX #7: Default 30 seconds
+  const [timeLeft, setTimeLeft] = useState(30);
   const [hasVoted, setHasVoted] = useState(false);
   const [chatMessage, setChatMessage] = useState('');
   const chatEndRef = useRef(null);
@@ -24,7 +22,7 @@ export default function Discussion({ onVote }) {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [state.messages]);
 
-  // FIX #7: Listen to server-controlled voting timer
+  // Listen to server-controlled voting timer
   useEffect(() => {
     if (!state.ws) return;
 
@@ -67,7 +65,7 @@ export default function Discussion({ onVote }) {
     onVote(targetID);
   };
 
-  // Helper to check if a player has voted (from vote updates)
+  // Helper to check if a player has voted
   const hasPlayerVoted = (playerId) => {
     return state.votesStatus?.[playerId] || false;
   };
@@ -133,11 +131,11 @@ export default function Discussion({ onVote }) {
                         <Ship type={getShipType(Object.values(state.players).indexOf(player))} size="md" />
                         <span className="font-game text-2xl text-gray-900">
                           {player.username}
-                          {player.id === state.playerId && ` (${t('common.you')})`}
+                          {player.id === state.playerId && ' (You)'}
                         </span>
                       </div>
                       
-                      {/* Vote Indicator (Shows if this player has voted, not who they voted for) */}
+                      {/* Vote Indicator */}
                       {hasPlayerVoted(player.id) && (
                         <div className="flex items-center gap-1">
                           <div className="w-3 h-3 bg-green-600 rounded-full border-2 border-brown-dark"></div>

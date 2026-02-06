@@ -5,7 +5,6 @@ import { motion } from 'framer-motion';
 import Starfield from './Starfield';
 import Ship, { getShipType } from './Ship';
 
-// FIX #4: Changed IMPOSTERId to impostorId for consistency
 export default function EndGame({ reason, impostorId }) {
   const { state } = useGame();
   
@@ -55,7 +54,7 @@ export default function EndGame({ reason, impostorId }) {
 
   const winInfo = getWinMessage(reason);
   const playerList = Object.values(state.players || {});
-  const impostor = playerList.find(p => p.id === impostorId); // Use lowercase
+  const impostor = playerList.find(p => p.id === impostorId);
 
   const getColorClasses = (color) => {
     const classes = {

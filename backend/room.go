@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"code-mafia-backend/database"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -43,57 +45,53 @@ type Task struct {
 }
 
 type GameState struct {
-	Phase         GamePhase          `json:"phase"`
-	CurrentStage  int                `json:"currentStage"`
-	TimerSeconds  int                `json:"timerSeconds"`
-	ImpostorID    string             `json:"impostorID"`
-	TasksComplete map[int]bool       `json:"tasksComplete"`
-	TimerPaused   bool               `json:"timerPaused"`
+	Phase         GamePhase    `json:"phase"`
+	CurrentStage  int          `json:"currentStage"`
+	TimerSeconds  int          `json:"timerSeconds"`
+	ImposterID    string       `json:"imposterID"`
+	TasksComplete map[int]bool `json:"tasksComplete"`
+	TimerPaused   bool         `json:"timerPaused"`
+	GameStartTime time.Time    `json:"gameStartTime"`
 }
 
 type Room struct {
-	ID          string
-	clients     map[*Client]bool
-	players     map[string]*Player
-	broadcast   chan []byte
-	mu          sync.RWMutex
-	yjsClients  map[*websocket.Conn]bool
-	
-	// Game State Machine
-	gameState   GameState
-	tasks       []*Task
-	
-	// Test Execution State
+	ID         string
+	clients    map[*Client]bool
+	players    map[string]*Player
+	broadcast  chan []byte
+	mu         sync.RWMutex
+	yjsClients map[*websocket.Conn]*sync.Mutex
+
+	gameState GameState
+	tasks     []*Task
+
 	testRunning    bool
 	testRunner     string
 	testRunnerName string
 	codeSnapshot   string
-	
-	// Voting System
-	votes          map[string]string
-	votingActive   bool
-	votingTimer    *time.Timer
-	
-	// ✅ FIX #2: Proper timer cancellation
-	timerCancel chan struct{}  // Changed from bool to struct{}
-	timerDone   chan struct{}  // NEW: Signal when timer goroutine completes
-	
-	// Sabotage System
-	sabotageActive     bool
-	sabotageType       string
-	sabotageEndTime    time.Time
-	corruptedCode      string
-	freezeTimer        *time.Timer
+
+	votes        map[string]string
+	votingActive bool
+	votingTimer  *time.Timer
+
+	timerCancel     chan struct{}
+	timerDone       chan struct{}
+	timerCancelOnce sync.Once
+
+	sabotageActive  bool
+	sabotageType    string
+	sabotageEndTime time.Time
+	corruptedCode   string
+	freezeTimer     *time.Timer
 }
 
-// ✅ FIX #2: Initialize new timer channels
 func newRoom(id string) *Room {
-	return &Room{
-		ID:          id,
-		clients:     make(map[*Client]bool),
-		players:     make(map[string]*Player),
-		broadcast:   make(chan []byte, 256),
-		yjsClients:  make(map[*websocket.Conn]bool),
+	room := &Room{
+		ID:         id,
+		clients:    make(map[*Client]bool),
+		players:    make(map[string]*Player),
+		broadcast:  make(chan []byte, 256),
+		yjsClients: make(map[*websocket.Conn]*sync.Mutex),
 		gameState: GameState{
 			Phase:         PhaseLobby,
 			CurrentStage:  0,
@@ -101,13 +99,77 @@ func newRoom(id string) *Room {
 			TasksComplete: make(map[int]bool),
 			TimerPaused:   false,
 		},
-		testRunning:     false,
-		votes:           make(map[string]string),
-		votingActive:    false,
-		timerCancel:     make(chan struct{}),  // ✅ Fixed
-		timerDone:       make(chan struct{}),  // ✅ New
-		sabotageActive:  false,
-		sabotageType:    "",
+		testRunning:    false,
+		votes:          make(map[string]string),
+		votingActive:   false,
+		timerCancel:    make(chan struct{}),
+		timerDone:      make(chan struct{}),
+		sabotageActive: false,
+	}
+
+	room.loadFromRedis()
+
+	return room
+}
+
+func (r *Room) loadFromRedis() {
+	err := database.LoadGameState(r.ID, &r.gameState)
+	if err == nil {
+		log.Printf("Loaded game state from Redis for room %s (Phase: %s)", r.ID, r.gameState.Phase)
+	}
+
+	playersData, err := database.LoadAllPlayers(r.ID)
+	if err == nil && len(playersData) > 0 {
+		for playerID, playerJSON := range playersData {
+			var player Player
+			if err := json.Unmarshal([]byte(playerJSON), &player); err == nil {
+				r.players[playerID] = &player
+				log.Printf("Loaded player %s from Redis", player.Username)
+			}
+		}
+	}
+
+	if r.gameState.Phase != PhaseLobby {
+		r.tasks = r.loadAllTasks()
+	}
+
+	if r.gameState.Phase >= PhaseTask1 && r.gameState.Phase <= PhaseTask3 {
+		r.resumeTimerFromRedis()
+	}
+}
+
+func (r *Room) saveToRedis() {
+	err := database.SaveGameState(r.ID, r.gameState)
+	if err != nil {
+		log.Printf("Failed to save game state to Redis: %v", err)
+	}
+
+	for _, player := range r.players {
+		err := database.SavePlayer(r.ID, player)
+		if err != nil {
+			log.Printf("Failed to save player %s: %v", player.Username, err)
+		}
+	}
+}
+
+func (r *Room) resumeTimerFromRedis() {
+	startTime, err := database.LoadTimerStart(r.ID)
+	if err != nil {
+		log.Printf("No timer start time found, starting fresh")
+		r.startGlobalTimer()
+		return
+	}
+
+	elapsed := time.Since(startTime).Seconds()
+	remaining := 60 - int(elapsed)
+
+	if remaining > 0 {
+		r.gameState.TimerSeconds = remaining
+		log.Printf("Resuming timer with %d seconds remaining", remaining)
+		r.startGlobalTimer()
+	} else {
+		log.Printf("Timer expired during downtime - ending game")
+		r.endGame("IMPOSTER_WIN_TIMEOUT")
 	}
 }
 
@@ -125,6 +187,8 @@ func (r *Room) run() {
 				}
 			}
 			r.mu.RUnlock()
+
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 }
@@ -132,6 +196,14 @@ func (r *Room) run() {
 func (r *Room) addPlayer(playerID, username string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if existingPlayer, exists := r.players[playerID]; exists {
+		log.Printf("Player %s reconnected to room %s", username, r.ID)
+		existingPlayer.IsAlive = true
+		existingPlayer.IsEliminated = false
+		r.saveToRedis()
+		return
+	}
 
 	isHost := len(r.players) == 0
 
@@ -143,133 +215,139 @@ func (r *Room) addPlayer(playerID, username string) {
 		IsAlive:      true,
 	}
 
-	log.Printf("Player %s (%s) added to room %s", username, playerID, r.ID)
+	log.Printf("Player %s (%s) added to room %s (host: %v)", username, playerID, r.ID, isHost)
+
+	r.saveToRedis()
 }
 
-// ✅ ENHANCED: Better logging and sabotage reset
 func (r *Room) startGame() {
-	log.Printf("🎬 [1/10] startGame() CALLED for room %s", r.ID)
-	
+	log.Printf("[1/10] startGame() CALLED for room %s", r.ID)
+
 	r.mu.Lock()
-	log.Printf("🎬 [2/10] Mutex LOCKED")
 
-	playerCount := len(r.players)
-	log.Printf("🎬 [3/10] Player count: %d", playerCount)
-
-	if playerCount < 3 {
+	if r.gameState.Phase != PhaseLobby {
 		r.mu.Unlock()
-		log.Printf("❌ [ABORT] Not enough players to start (need 3, have %d)", playerCount)
+		log.Printf("[ABORT] Game already started in phase %s", r.gameState.Phase)
 		return
 	}
 
-	// ✅ FIX #4: Reset sabotage state
-	log.Printf("🎬 [3.5/10] Resetting sabotage state...")
+	playerCount := len(r.players)
+	log.Printf("[2/10] Player count: %d", playerCount)
+
+	if playerCount < 3 {
+		r.mu.Unlock()
+		log.Printf("[ABORT] Not enough players to start (need 3, have %d)", playerCount)
+		return
+	}
+
 	r.sabotageActive = false
 	r.sabotageType = ""
 	if r.freezeTimer != nil {
 		r.freezeTimer.Stop()
 		r.freezeTimer = nil
 	}
-	
-	// ✅ FIX #2: Initialize NEW timer channels (prevents reuse)
+
 	r.timerCancel = make(chan struct{})
 	r.timerDone = make(chan struct{})
+	r.timerCancelOnce = sync.Once{}
 
-	log.Printf("🎬 [4/10] Selecting random impostor...")
-	
-	// Select random impostor
+	log.Printf("[3/10] Selecting random imposter...")
+
 	playerIDs := make([]string, 0, len(r.players))
 	for id := range r.players {
 		playerIDs = append(playerIDs, id)
 	}
 
 	rand.Seed(time.Now().UnixNano())
-	impostorIdx := rand.Intn(len(playerIDs))
-	r.gameState.ImpostorID = playerIDs[impostorIdx]
+	imposterIdx := rand.Intn(len(playerIDs))
+	r.gameState.ImposterID = playerIDs[imposterIdx]
 
-	log.Printf("🎬 [5/10] Impostor selected: %s", r.gameState.ImpostorID)
+	log.Printf("[4/10] Imposter selected: %s", r.gameState.ImposterID)
 
-	// Assign roles
 	for id, player := range r.players {
-		if id == r.gameState.ImpostorID {
+		if id == r.gameState.ImposterID {
 			player.Role = "IMPOSTER"
-			log.Printf("   👹 %s is IMPOSTER", player.Username)
+			log.Printf("%s is IMPOSTER", player.Username)
 		} else {
 			player.Role = "CIVILIAN"
-			log.Printf("   👤 %s is CIVILIAN", player.Username)
+			log.Printf("%s is CIVILIAN", player.Username)
 		}
 	}
 
-	log.Printf("🎬 [6/10] Loading tasks...")
-	
-	// Load all tasks
+	log.Printf("[5/10] Loading tasks...")
+
 	r.tasks = r.loadAllTasks()
-	
-	log.Printf("🎬 [7/10] Tasks loaded: %d tasks", len(r.tasks))
-	
-	// Initialize game state
+
+	log.Printf("[6/10] Tasks loaded: %d tasks", len(r.tasks))
+
 	r.gameState.Phase = PhaseRoleReveal
 	r.gameState.CurrentStage = 0
 	r.gameState.TimerSeconds = 60
 	r.gameState.TasksComplete = make(map[int]bool)
+	r.gameState.GameStartTime = time.Now()
 
-	log.Printf("🎬 [8/10] Game state initialized - Phase: %s", r.gameState.Phase)
+	log.Printf("[7/10] Game state initialized - Phase: %s", r.gameState.Phase)
+
+	r.saveToRedis()
 
 	r.mu.Unlock()
-	log.Printf("🎬 [9/10] Mutex UNLOCKED")
+	log.Printf("[8/10] Broadcasting ROLE_REVEAL state to all clients...")
 
-	log.Printf("🎬 [10/10] Broadcasting ROLE_REVEAL state to all clients...")
 	r.broadcastGameState()
 
-	log.Printf("✅ startGame() COMPLETED - Starting 5-second role reveal timer")
+	log.Printf("startGame() COMPLETED - Starting 5-second role reveal timer")
 
-	// Role reveal for 5 seconds, then start Task 1
 	go func() {
-		log.Printf("⏱️  [Goroutine] Waiting 5 seconds for role reveal...")
+		log.Printf("[Goroutine] Waiting 5 seconds for role reveal...")
 		time.Sleep(5 * time.Second)
-		
-		log.Printf("⏱️  [Goroutine] Role reveal complete - Transitioning to TASK_1")
-		
+
+		log.Printf("[Goroutine] Role reveal complete - Transitioning to TASK_1")
+
 		r.mu.Lock()
 		r.gameState.Phase = PhaseTask1
 		r.gameState.CurrentStage = 1
+		r.saveToRedis()
 		r.mu.Unlock()
-		
-		log.Printf("⏱️  [Goroutine] Broadcasting TASK_1 state...")
+
+		log.Printf("[Goroutine] Broadcasting TASK_1 state...")
 		r.broadcastGameState()
-		
-		log.Printf("⏱️  [Goroutine] Starting global timer...")
+
+		log.Printf("[Goroutine] Starting global timer...")
 		r.startGlobalTimer()
-		
-		log.Printf("⏱️  [Goroutine] Timer started successfully")
+
+		log.Printf("[Goroutine] Timer started successfully")
 	}()
 }
 
-// ✅ FIX #2: Proper goroutine cleanup with channels
 func (r *Room) startGlobalTimer() {
-	log.Printf("🕐 Starting global timer for room %s", r.ID)
-	
+	log.Printf("Starting global timer for room %s", r.ID)
+
+	database.SaveTimerStart(r.ID, time.Now())
+
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
-		defer close(r.timerDone)  // ✅ Signal completion
-		
+		defer close(r.timerDone)
+
 		for {
 			select {
 			case <-ticker.C:
 				r.mu.Lock()
-				
-				// Skip tick if timer is paused (during discussion)
+
 				if r.gameState.TimerPaused {
 					r.mu.Unlock()
 					continue
 				}
-				
+
 				r.gameState.TimerSeconds--
 				currentTime := r.gameState.TimerSeconds
+
+				if currentTime%5 == 0 {
+					r.saveToRedis()
+				}
+
 				r.mu.Unlock()
-				
-				// Broadcast time sync to all clients
+
 				msg := Message{
 					Type: "SYNC_TIMER",
 					Data: map[string]interface{}{
@@ -278,16 +356,15 @@ func (r *Room) startGlobalTimer() {
 				}
 				data, _ := json.Marshal(msg)
 				r.broadcast <- data
-				
-				// Check if time is up
+
 				if currentTime <= 0 {
-					log.Printf("⏰ Timer expired for room %s - Impostor wins!", r.ID)
+					log.Printf("Timer expired for room %s - Imposter wins!", r.ID)
 					r.endGame("IMPOSTER_WIN_TIMEOUT")
 					return
 				}
-				
+
 			case <-r.timerCancel:
-				log.Printf("⏹️ Timer cancelled for room %s", r.ID)
+				log.Printf("Timer cancelled for room %s", r.ID)
 				return
 			}
 		}
@@ -298,34 +375,31 @@ func (r *Room) pauseTimer() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gameState.TimerPaused = true
-	log.Printf("⏸️ Timer paused for room %s", r.ID)
+	r.saveToRedis()
+	log.Printf("Timer paused for room %s", r.ID)
 }
 
 func (r *Room) resumeTimer() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gameState.TimerPaused = false
-	log.Printf("▶️ Timer resumed for room %s", r.ID)
+	r.saveToRedis()
+	log.Printf("Timer resumed for room %s", r.ID)
 }
-
-// Part 2 of room.go - Tasks, Validation, Voting
 
 func (r *Room) loadAllTasks() []*Task {
 	return []*Task{
-		// Task 1: Engine Room - SportBrakes Bug
 		{
-			ID:    "task1-sportbrakes",
-			Stage: 1,
-			Title: "🔧 ENGINE ROOM - Brake System Failure",
+			ID:          "task1-sportbrakes",
+			Stage:       1,
+			Title:       "ENGINE ROOM - Brake System Failure",
 			Description: "The racing car's brake system is malfunctioning! Fix the constructor to properly initialize SportBrakes.",
 			Template: `public class RacingCar {
     private String model;
     private Brakes brakes;
 
-
     public RacingCar(String model) {
         this.model = model;
-
     }
 
     public void applyBrakes() {
@@ -350,12 +424,11 @@ class SportBrakes extends Brakes {
     }
 }`,
 		},
-		
-		// Task 2: Navigation - Satellite Orbit Bug
+
 		{
-			ID:    "task2-satellite",
-			Stage: 2,
-			Title: "🛰️ NAVIGATION - Satellite Orbit Calculation",
+			ID:          "task2-satellite",
+			Stage:       2,
+			Title:       "🛰️ NAVIGATION - Satellite Orbit Calculation",
 			Description: "The satellite's orbit calculation is broken! Fix the integer division and variable shadowing bugs.",
 			Template: `public class SatelliteSystem {
     static int altitude = 2000;
@@ -363,9 +436,9 @@ class SportBrakes extends Brakes {
     public static void main(String[] args) {
         int targetAltitude = 2050;
         
-
         double efficiency = 1 / 2;
         System.out.println("Efficiency: " + efficiency);
+
 
         while (altitude != targetAltitude) {
             climb(20);
@@ -380,12 +453,11 @@ class SportBrakes extends Brakes {
     }
 }`,
 		},
-		
-		// Task 3: Oxygen System - Two-Part Puzzle
+
 		{
-			ID:    "task3-oxygen",
-			Stage: 3,
-			Title: "💨 OXYGEN SYSTEM - Life Support Critical",
+			ID:          "task3-oxygen",
+			Stage:       3,
+			Title:       "💨 OXYGEN SYSTEM - Life Support Critical",
 			Description: "CRITICAL! Fix both the oxygen flow calculation AND the filtration loop logic before the system fails!",
 			Template: `public class OxygenSystem {
     private int oxygenLevel = 100;
@@ -406,10 +478,8 @@ class SportBrakes extends Brakes {
         int cyclesNeeded = minutes;
         int cyclesComplete = 0;
         
-
         while (cyclesComplete < cyclesNeeded) {
             System.out.println("Filtering... Cycle " + cyclesComplete);
-
         }
     }
 }`,
@@ -417,14 +487,12 @@ class SportBrakes extends Brakes {
 	}
 }
 
-// Handle test run for current stage
 func (r *Room) handleRunTests(playerID, code string) {
 	r.mu.Lock()
 
-	// Check if tests are already running
 	if r.testRunning {
 		r.mu.Unlock()
-		
+
 		errorMsg := Message{
 			Type: "ERROR_BUSY",
 			Data: map[string]interface{}{
@@ -442,14 +510,12 @@ func (r *Room) handleRunTests(playerID, code string) {
 		return
 	}
 
-	// Check if player is eliminated
 	player := r.players[playerID]
 	if player == nil || player.IsEliminated {
 		r.mu.Unlock()
 		return
 	}
 
-	// Get current stage
 	currentStage := r.gameState.CurrentStage
 	if currentStage < 1 || currentStage > 3 {
 		r.mu.Unlock()
@@ -457,19 +523,17 @@ func (r *Room) handleRunTests(playerID, code string) {
 		return
 	}
 
-	// Acquire lock
 	r.testRunning = true
 	r.testRunner = playerID
 	r.testRunnerName = player.Username
 	r.codeSnapshot = code
-	
+
 	r.mu.Unlock()
 
-	// Broadcast test locked
 	testLockedMsg := Message{
 		Type: "TEST_LOCKED",
 		Data: map[string]interface{}{
-			"runner":   player.Username,
+			"runner":   "A crewmate",
 			"runnerID": playerID,
 			"stage":    currentStage,
 		},
@@ -477,13 +541,11 @@ func (r *Room) handleRunTests(playerID, code string) {
 	data, _ := json.Marshal(testLockedMsg)
 	r.broadcast <- data
 
-	log.Printf("🔒 Stage %d test locked by %s", currentStage, player.Username)
+	log.Printf("Stage %d test locked by %s", currentStage, player.Username)
 
-	// Spawn goroutine for test execution
 	go func() {
 		time.Sleep(5 * time.Second)
 
-		// Validate code for current stage
 		passed := r.validateStageCode(currentStage, r.codeSnapshot)
 
 		r.mu.Lock()
@@ -493,35 +555,32 @@ func (r *Room) handleRunTests(playerID, code string) {
 		r.codeSnapshot = ""
 		r.mu.Unlock()
 
-		// Broadcast results
 		testCompleteMsg := Message{
 			Type: "TEST_COMPLETE",
 			Data: map[string]interface{}{
 				"passed": passed,
 				"stage":  currentStage,
-				"runner": player.Username,
+				"runner": "A crewmate",
 			},
 		}
 		data, _ := json.Marshal(testCompleteMsg)
 		r.broadcast <- data
 
-		// If test passed, advance to next stage
 		if passed {
 			r.advanceStage(currentStage)
 		}
 	}()
 }
 
-// ✅ FIX #12: Enhanced code validation with normalization
 func (r *Room) validateStageCode(stage int, code string) bool {
-	// Normalize code for better matching
+
 	normalized := normalizeCode(code)
-	
+
 	switch stage {
-	case 1: // Task 1: SportBrakes
+	case 1:
 		return strings.Contains(normalized, "newsportbrakes()")
-	
-	case 2: // Task 2: Satellite
+
+	case 2:
 		hasEfficiency := containsAny(normalized, []string{
 			"1.0/2", "1/2.0", "1.0/2.0", "=0.5", "efficiency=0.5",
 		})
@@ -534,8 +593,8 @@ func (r *Room) validateStageCode(stage int, code string) bool {
 			"satellitesystem.altitude=satellitesystem.altitude+",
 		})
 		return hasEfficiency && hasLoop && hasClimb
-	
-	case 3: // Task 3: Oxygen (two bugs minimum)
+
+	case 3:
 		hasDistribution := containsAny(normalized, []string{
 			"doubleperperson", "(double)oxygenlevel",
 		})
@@ -545,22 +604,27 @@ func (r *Room) validateStageCode(stage int, code string) bool {
 		hasIncrement := containsAny(normalized, []string{
 			"cyclescomplete++", "cyclescomplete+=1",
 		})
-		
+
 		bugsFixed := 0
-		if hasDistribution { bugsFixed++ }
-		if hasLoopFix { bugsFixed++ }
-		if hasIncrement { bugsFixed++ }
-		
-		return bugsFixed >= 2 // Need at least 2 of 3 bugs fixed
-	
+		if hasDistribution {
+			bugsFixed++
+		}
+		if hasLoopFix {
+			bugsFixed++
+		}
+		if hasIncrement {
+			bugsFixed++
+		}
+
+		return bugsFixed >= 2
+
 	default:
 		return false
 	}
 }
 
-// ✅ FIX #12: Helper functions for code validation
 func normalizeCode(code string) string {
-	// Remove single-line comments
+
 	lines := strings.Split(code, "\n")
 	var cleaned []string
 	for _, line := range lines {
@@ -570,17 +634,15 @@ func normalizeCode(code string) string {
 		cleaned = append(cleaned, line)
 	}
 	result := strings.Join(cleaned, "\n")
-	
-	// Remove multi-line comments
+
 	re := regexp.MustCompile(`(?s)/\*.*?\*/`)
 	result = re.ReplaceAllString(result, "")
-	
-	// Remove all whitespace and lowercase
+
 	result = strings.ReplaceAll(result, " ", "")
 	result = strings.ReplaceAll(result, "\t", "")
 	result = strings.ReplaceAll(result, "\n", "")
 	result = strings.ReplaceAll(result, "\r", "")
-	
+
 	return strings.ToLower(result)
 }
 
@@ -593,89 +655,86 @@ func containsAny(text string, patterns []string) bool {
 	return false
 }
 
-// Advance to next stage
 func (r *Room) advanceStage(completedStage int) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
-	// Mark stage as complete
 	r.gameState.TasksComplete[completedStage] = true
-	
-	log.Printf("✅ Stage %d completed!", completedStage)
 
-	// Determine next phase
+	log.Printf("Stage %d completed!", completedStage)
+
+	r.saveToRedis()
+
 	if completedStage == 3 {
-		// All tasks complete - Crewmates win!
 		r.gameState.Phase = PhaseEnd
 		r.mu.Unlock()
 		r.endGame("CIVILIAN_WIN_TASKS")
 		return
 	}
 
-	// Broadcast stage transition
+	r.mu.Unlock()
+
 	nextStage := completedStage + 1
 	msg := Message{
 		Type: "CHANGE_SCENE",
 		Data: map[string]interface{}{
 			"fromStage": completedStage,
 			"toStage":   nextStage,
-			"delay":     3000, // 3 second transition
+			"delay":     3000,
 		},
 	}
 	data, _ := json.Marshal(msg)
 	r.broadcast <- data
 
-	log.Printf("🚀 Transitioning from Stage %d to Stage %d", completedStage, nextStage)
+	log.Printf("Transitioning from Stage %d to Stage %d", completedStage, nextStage)
 
-	// Schedule actual phase change after transition
 	go func() {
 		time.Sleep(3 * time.Second)
-		
+
 		r.mu.Lock()
 		r.gameState.CurrentStage = nextStage
-		
+
 		switch nextStage {
 		case 2:
 			r.gameState.Phase = PhaseTask2
 		case 3:
 			r.gameState.Phase = PhaseTask3
 		}
+
+		r.saveToRedis()
 		r.mu.Unlock()
-		
+
 		r.broadcastGameState()
-		log.Printf("📍 Now on Stage %d", nextStage)
+		log.Printf("Now on Stage %d", nextStage)
 	}()
 }
 
-// ✅ ENHANCED: Discussion with better timer management
 func (r *Room) startDiscussion() {
 	r.mu.Lock()
 	r.gameState.TimerPaused = true
 	r.gameState.Phase = PhaseDiscussion
-	r.votes = make(map[string]string) // Reset votes
+	r.votes = make(map[string]string)
 	r.votingActive = true
+	r.saveToRedis()
 	r.mu.Unlock()
-	
+
 	r.broadcastGameState()
-	
-	log.Printf("🗣️ Discussion started in room %s - Timer paused", r.ID)
-	
-	// Server-controlled voting timer (30 seconds)
+
+	log.Printf("Discussion started in room %s - Timer paused", r.ID)
+
 	votingDuration := 30
-	
-	// Broadcast countdown to all clients
+
 	go func() {
 		for i := votingDuration; i > 0; i-- {
 			time.Sleep(1 * time.Second)
-			
+
 			r.mu.RLock()
 			stillVoting := r.gameState.Phase == PhaseDiscussion
 			r.mu.RUnlock()
-			
+
 			if !stillVoting {
-				return // Voting ended early
+				return
 			}
-			
+
 			msg := Message{
 				Type: "VOTING_TIMER",
 				Data: map[string]interface{}{
@@ -685,11 +744,10 @@ func (r *Room) startDiscussion() {
 			data, _ := json.Marshal(msg)
 			r.broadcast <- data
 		}
-		
-		// Time's up - auto-resolve voting
+
 		r.mu.Lock()
 		if r.gameState.Phase == PhaseDiscussion {
-			log.Printf("⏰ Voting timeout - tallying votes")
+			log.Printf("Voting timeout - tallying votes")
 			r.mu.Unlock()
 			r.tallyVotes()
 		} else {
@@ -698,23 +756,20 @@ func (r *Room) startDiscussion() {
 	}()
 }
 
-// ✅ ENHANCED: Vote aggregation
 func (r *Room) handleVote(voterID, targetID string) {
 	r.mu.Lock()
-	
-	// Store vote
+
 	r.votes[voterID] = targetID
-	
-	log.Printf("🗳️ Player %s voted for %s", voterID, targetID)
-	
-	// Broadcast vote update to show who has voted
+
+	log.Printf("Player %s voted for %s", voterID, targetID)
+
 	voteStatus := make(map[string]bool)
 	for vid := range r.votes {
 		voteStatus[vid] = true
 	}
-	
+
 	r.mu.Unlock()
-	
+
 	msg := Message{
 		Type: "VOTE_UPDATE",
 		Data: map[string]interface{}{
@@ -723,8 +778,7 @@ func (r *Room) handleVote(voterID, targetID string) {
 	}
 	data, _ := json.Marshal(msg)
 	r.broadcast <- data
-	
-	// Check if all alive players have voted
+
 	r.mu.RLock()
 	aliveCount := 0
 	for _, p := range r.players {
@@ -734,12 +788,10 @@ func (r *Room) handleVote(voterID, targetID string) {
 	}
 	voteCount := len(r.votes)
 	r.mu.RUnlock()
-	
-	// ✅ FIX #8: Add brief delay for UX
+
 	if voteCount >= aliveCount {
-		log.Printf("✅ All players voted (%d/%d) - tallying in 1 second", voteCount, aliveCount)
-		
-		// Notify all votes are in
+		log.Printf("All players voted (%d/%d) - tallying in 1 second", voteCount, aliveCount)
+
 		allInMsg := Message{
 			Type: "ALL_VOTES_IN",
 			Data: map[string]interface{}{
@@ -748,78 +800,53 @@ func (r *Room) handleVote(voterID, targetID string) {
 		}
 		allInData, _ := json.Marshal(allInMsg)
 		r.broadcast <- allInData
-		
+
 		time.Sleep(1 * time.Second)
 		r.tallyVotes()
 	}
 }
 
-// Part 3 of room.go - Voting, End Game, Sabotage
-
-// Tally votes and determine outcome
 func (r *Room) tallyVotes() {
 	r.mu.Lock()
-	
+
 	if !r.votingActive {
 		r.mu.Unlock()
-		return // Already processed
+		return
 	}
-	
+
 	r.votingActive = false
-	
-	// Count votes for each target
+
 	voteCounts := make(map[string]int)
 	for _, targetID := range r.votes {
 		voteCounts[targetID]++
 	}
-	
-	// Find player with most votes
+
 	maxVotes := 0
 	var eliminated string
-	
+
 	for targetID, count := range voteCounts {
 		if count > maxVotes {
 			maxVotes = count
 			eliminated = targetID
 		} else if count == maxVotes && targetID != eliminated {
-			// Tie - no one eliminated
 			eliminated = ""
 		}
 	}
-	
-	isImpostor := eliminated == r.gameState.ImpostorID
-	
-	// Get eliminated player name BEFORE unlocking
+
+	isImpostor := eliminated == r.gameState.ImposterID
+
 	var eliminatedName string
 	if eliminated != "" && eliminated != "SKIP" {
 		if player, exists := r.players[eliminated]; exists {
 			eliminatedName = player.Username
 		}
 	}
-	
+
 	r.mu.Unlock()
-	
-	// Broadcast vote results
-	resultMsg := Message{
-		Type: "VOTE_RESULT",
-		Data: map[string]interface{}{
-			"eliminated":  eliminated,
-			"voteCounts":  voteCounts,
-			"wasImpostor": isImpostor,
-		},
-	}
-	data, _ := json.Marshal(resultMsg)
-	r.broadcast <- data
-	
-	// Wait 2 seconds to show results
-	time.Sleep(2 * time.Second)
-	
-	// Handle outcome
+
 	if eliminated == "" || eliminated == "SKIP" {
-		// No elimination or skip vote won
-		log.Printf("⏭️ No one eliminated - resuming game")
-		
-		// Send chat message
+		log.Printf("⏭ No one eliminated - resuming game")
+
 		chatMsg := Message{
 			Type: "CHAT",
 			Data: map[string]interface{}{
@@ -830,45 +857,53 @@ func (r *Room) tallyVotes() {
 		}
 		chatData, _ := json.Marshal(chatMsg)
 		r.broadcast <- chatData
-		
+
 		r.resumeGameAfterVoting()
-		
-		// Reset votes
+
 		r.mu.Lock()
 		r.votes = make(map[string]string)
 		r.mu.Unlock()
 		return
 	}
-	
-	// Eliminate player
-	r.eliminatePlayer(eliminated)
-	
-	// Send elimination chat message with correct name
+
 	chatMsg := Message{
 		Type: "CHAT",
 		Data: map[string]interface{}{
 			"username": "System",
-			"text":     eliminatedName + " was eliminated!",
+			"text":     "🗳️ " + eliminatedName + " was voted out!",
 			"system":   true,
 		},
 	}
 	chatData, _ := json.Marshal(chatMsg)
 	r.broadcast <- chatData
-	
-	// Wait another second for elimination message to be seen
+
 	time.Sleep(1 * time.Second)
-	
+
+	r.eliminatePlayer(eliminated)
+
+	time.Sleep(1 * time.Second)
+
 	if isImpostor {
-		// Voted out the impostor - Crewmates win!
-		log.Printf("🎉 Impostor eliminated - Crewmates win!")
+		log.Printf("Impostor eliminated - Crewmates win!")
 		r.endGame("CIVILIAN_WIN_VOTE")
 	} else {
-		// Wrong vote - Resume game
-		log.Printf("😢 Wrong vote - game continues")
+		log.Printf("Wrong vote - game continues")
+
+		wrongVoteMsg := Message{
+			Type: "CHAT",
+			Data: map[string]interface{}{
+				"username": "System",
+				"text":     eliminatedName + " was not the impostor...",
+				"system":   true,
+			},
+		}
+		wrongVoteData, _ := json.Marshal(wrongVoteMsg)
+		r.broadcast <- wrongVoteData
+
+		time.Sleep(1 * time.Second)
 		r.resumeGameAfterVoting()
 	}
-	
-	// Reset votes
+
 	r.mu.Lock()
 	r.votes = make(map[string]string)
 	r.mu.Unlock()
@@ -876,7 +911,7 @@ func (r *Room) tallyVotes() {
 
 func (r *Room) resumeGameAfterVoting() {
 	r.resumeTimer()
-	
+
 	r.mu.Lock()
 	currentStage := r.gameState.CurrentStage
 	switch currentStage {
@@ -889,8 +924,9 @@ func (r *Room) resumeGameAfterVoting() {
 	default:
 		r.gameState.Phase = PhaseTask1
 	}
+	r.saveToRedis()
 	r.mu.Unlock()
-	
+
 	r.broadcastGameState()
 }
 
@@ -901,8 +937,9 @@ func (r *Room) eliminatePlayer(playerID string) {
 	if player, exists := r.players[playerID]; exists {
 		player.IsEliminated = true
 		player.IsAlive = false
-		
-		// Broadcast elimination
+
+		r.saveToRedis()
+
 		elimMsg := Message{
 			Type: "PLAYER_ELIMINATED",
 			Data: map[string]interface{}{
@@ -912,62 +949,111 @@ func (r *Room) eliminatePlayer(playerID string) {
 		}
 		data, _ := json.Marshal(elimMsg)
 		r.broadcast <- data
+
+		log.Printf("Player %s eliminated", player.Username)
 	}
 }
 
-// ✅ FIX #2 & #5: Proper timer cleanup and single message
 func (r *Room) endGame(reason string) {
 	log.Printf("🏁 [endGame] Starting game end sequence - Reason: %s", reason)
-	
-	// ✅ FIX #2: Safe timer cancellation
-	select {
-	case <-r.timerCancel:
-		log.Printf("🏁 [endGame] Timer already cancelled")
-	default:
+
+	r.timerCancelOnce.Do(func() {
 		close(r.timerCancel)
-		log.Printf("🏁 [endGame] Timer cancel channel closed")
-	}
-	
-	// Wait for timer goroutine to finish (with timeout)
+		log.Printf("[endGame] Timer cancel channel closed")
+	})
+
 	select {
 	case <-r.timerDone:
-		log.Printf("✅ Timer goroutine stopped cleanly")
+		log.Printf("Timer goroutine stopped cleanly")
 	case <-time.After(2 * time.Second):
-		log.Printf("⚠️ Timer stop timeout (goroutine may still be running)")
+		log.Printf("Timer stop timeout")
 	}
-	
+
 	r.mu.Lock()
 	r.gameState.Phase = "GAME_OVER"
-	impostorID := r.gameState.ImpostorID
-	
-	// ✅ FIX #5: Build complete final state
+	imposterID := r.gameState.ImposterID
+
 	finalState := r.buildGameStatePayload()
+
+	duration := int(time.Since(r.gameState.GameStartTime).Seconds())
+
+	r.saveToRedis()
+
 	r.mu.Unlock()
 
-	// ✅ FIX #5: Send single combined message
+	go r.saveMatchHistory(reason, duration)
+
 	msg := Message{
 		Type: "GAME_ENDED",
 		Data: map[string]interface{}{
 			"reason":     reason,
-			"impostorID": impostorID,
+			"imposterID": imposterID,
 			"finalState": finalState,
 		},
 	}
 
 	data, _ := json.Marshal(msg)
-	log.Printf("🏁 [endGame] Broadcasting GAME_ENDED message")
+	log.Printf("[endGame] Broadcasting GAME_ENDED message")
 	r.broadcast <- data
-	
-	log.Printf("✅ [endGame] Game ended: %s", reason)
+
+	log.Printf("[endGame] Game ended: %s", reason)
+
+	go func() {
+		time.Sleep(5 * time.Minute)
+		database.DeleteRoom(r.ID)
+		log.Printf("🧹 Room %s cleaned up from Redis", r.ID)
+	}()
 }
 
-// ✅ FIX #5: Helper to build game state
+func (r *Room) saveMatchHistory(reason string, duration int) {
+	var winnerRole string
+	if strings.Contains(reason, "CIVILIAN") {
+		winnerRole = "CIVILIAN"
+	} else if strings.Contains(reason, "IMPOSTER") || strings.Contains(reason, "IMPOSTER") {
+		winnerRole = "IMPOSTER"
+	} else {
+		winnerRole = "UNKNOWN"
+	}
+
+	stagesCompleted := 0
+	for _, completed := range r.gameState.TasksComplete {
+		if completed {
+			stagesCompleted++
+		}
+	}
+
+	match := database.GameMatch{
+		RoomCode:        r.ID,
+		WinnerRole:      winnerRole,
+		ImpostorID:      r.gameState.ImposterID,
+		DurationSeconds: duration,
+		StagesCompleted: stagesCompleted,
+		EndedAt:         time.Now(),
+	}
+
+	var matchPlayers []database.MatchPlayer
+	for _, player := range r.players {
+		matchPlayers = append(matchPlayers, database.MatchPlayer{
+			UserID:        player.ID,
+			Role:          player.Role,
+			WasEliminated: player.IsEliminated,
+		})
+	}
+
+	err := database.SaveGameMatch(match, matchPlayers)
+	if err != nil {
+		log.Printf("Failed to save match history: %v", err)
+	} else {
+		log.Printf("Match history saved to Supabase")
+	}
+}
+
 func (r *Room) buildGameStatePayload() map[string]interface{} {
 	var currentTask *Task
 	if r.gameState.CurrentStage >= 1 && r.gameState.CurrentStage <= 3 {
 		currentTask = r.tasks[r.gameState.CurrentStage-1]
 	}
-	
+
 	return map[string]interface{}{
 		"phase":         r.gameState.Phase,
 		"currentStage":  r.gameState.CurrentStage,
@@ -980,23 +1066,147 @@ func (r *Room) buildGameStatePayload() map[string]interface{} {
 	}
 }
 
+func (r *Room) handleSabotage(playerID, sabotageType string) {
+	r.mu.Lock()
+
+	player := r.players[playerID]
+	if player == nil || player.Role != "IMPOSTER" {
+		r.mu.Unlock()
+		log.Printf("Invalid sabotage attempt: %s", playerID)
+		return
+	}
+
+	if r.sabotageActive {
+		r.mu.Unlock()
+		log.Printf("Sabotage already active")
+		return
+	}
+
+	r.sabotageActive = true
+	r.sabotageType = sabotageType
+
+	log.Printf("SABOTAGE: %s activated %s", player.Username, sabotageType)
+
+	r.mu.Unlock()
+
+	switch sabotageType {
+	case "FREEZE":
+		r.handleFreezeSabotage()
+
+	case "CORRUPT":
+		r.handleCorruptSabotage()
+
+	default:
+		log.Printf("Unknown sabotage type: %s", sabotageType)
+		r.mu.Lock()
+		r.sabotageActive = false
+		r.mu.Unlock()
+	}
+}
+
+func (r *Room) handleFreezeSabotage() {
+	log.Printf("FREEZE sabotage activated - 5 second lockout")
+
+	freezeMsg := Message{
+		Type: "SABOTAGE_STARTED",
+		Data: map[string]interface{}{
+			"type":     "FREEZE",
+			"duration": 5000,
+		},
+	}
+	data, _ := json.Marshal(freezeMsg)
+	r.broadcast <- data
+
+	chatMsg := Message{
+		Type: "CHAT",
+		Data: map[string]interface{}{
+			"username": "System",
+			"text":     "⚠️ SYSTEM JAMMED - Communications frozen!",
+			"system":   true,
+		},
+	}
+	chatData, _ := json.Marshal(chatMsg)
+	r.broadcast <- chatData
+
+	go func() {
+		time.Sleep(5 * time.Second)
+
+		r.mu.Lock()
+		r.sabotageActive = false
+		r.sabotageType = ""
+		r.mu.Unlock()
+
+		endMsg := Message{
+			Type: "SABOTAGE_ENDED",
+			Data: map[string]interface{}{
+				"type": "FREEZE",
+			},
+		}
+		endData, _ := json.Marshal(endMsg)
+		r.broadcast <- endData
+
+		chatMsg := Message{
+			Type: "CHAT",
+			Data: map[string]interface{}{
+				"username": "System",
+				"text":     "✅ Systems restored - Communications online",
+				"system":   true,
+			},
+		}
+		chatData, _ := json.Marshal(chatMsg)
+		r.broadcast <- chatData
+
+		log.Printf("FREEZE sabotage ended")
+	}()
+}
+
+func (r *Room) handleCorruptSabotage() {
+	log.Printf("CORRUPT sabotage activated - injecting malware")
+
+	malwareText := "\n// ⚠️ MALWARE DETECTED - REMOVE THIS LINE TO COMPILE\n// SYSTEM_FAILURE_CODE_0x00FF\n"
+
+	corruptMsg := Message{
+		Type: "SABOTAGE_CORRUPT",
+		Data: map[string]interface{}{
+			"malware": malwareText,
+			"action":  "INJECT_AT_TOP",
+		},
+	}
+	data, _ := json.Marshal(corruptMsg)
+	r.broadcast <- data
+
+	chatMsg := Message{
+		Type: "CHAT",
+		Data: map[string]interface{}{
+			"username": "System",
+			"text":     "🦠 MALWARE DETECTED - Code corrupted!",
+			"system":   true,
+		},
+	}
+	chatData, _ := json.Marshal(chatMsg)
+	r.broadcast <- chatData
+
+	r.mu.Lock()
+	r.sabotageActive = false
+	r.sabotageType = ""
+	r.mu.Unlock()
+
+	log.Printf("CORRUPT sabotage injected - players must remove malware manually")
+}
+
 func (r *Room) broadcastGameState() {
 	r.mu.RLock()
-	
-	log.Printf("📡 [broadcastGameState] Starting broadcast for room %s", r.ID)
-	log.Printf("📡 [broadcastGameState] Current phase: %s", r.gameState.Phase)
-	log.Printf("📡 [broadcastGameState] Current stage: %d", r.gameState.CurrentStage)
-	log.Printf("📡 [broadcastGameState] Connected clients: %d", len(r.clients))
-	
-	// Get current task
+
+	log.Printf("[broadcastGameState] Starting broadcast for room %s", r.ID)
+	log.Printf("[broadcastGameState] Current phase: %s", r.gameState.Phase)
+	log.Printf("[broadcastGameState] Current stage: %d", r.gameState.CurrentStage)
+
 	var currentTask *Task
 	if r.gameState.CurrentStage >= 1 && r.gameState.CurrentStage <= 3 {
 		currentTask = r.tasks[r.gameState.CurrentStage-1]
-		log.Printf("📡 [broadcastGameState] Current task: %s", currentTask.Title)
-	} else {
-		log.Printf("📡 [broadcastGameState] No current task (stage %d)", r.gameState.CurrentStage)
+		log.Printf("[broadcastGameState] Current task: %s", currentTask.Title)
 	}
-	
+
 	state := map[string]interface{}{
 		"phase":         r.gameState.Phase,
 		"currentStage":  r.gameState.CurrentStage,
@@ -1018,19 +1228,15 @@ func (r *Room) broadcastGameState() {
 
 	data, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("❌ [broadcastGameState] Error marshaling: %v", err)
+		log.Printf("[broadcastGameState] Error marshaling: %v", err)
 		r.mu.RUnlock()
 		return
 	}
 
-	log.Printf("📡 [broadcastGameState] Message marshaled successfully (%d bytes)", len(data))
-	
 	r.mu.RUnlock()
 
-	// Send to broadcast channel
-	log.Printf("📡 [broadcastGameState] Sending to broadcast channel...")
 	r.broadcast <- data
-	log.Printf("✅ [broadcastGameState] Broadcast complete!")
+	log.Printf("[broadcastGameState] Broadcast complete!")
 }
 
 func (r *Room) broadcastPlayerList() {
@@ -1043,7 +1249,6 @@ func (r *Room) broadcastPlayerList() {
 	r.broadcast <- data
 }
 
-// Yjs WebSocket handler
 func (h *Hub) handleYjsConnection(w http.ResponseWriter, r *http.Request, conn *websocket.Conn) {
 	roomID := r.URL.Query().Get("room")
 	if roomID == "" {
@@ -1052,18 +1257,24 @@ func (h *Hub) handleYjsConnection(w http.ResponseWriter, r *http.Request, conn *
 		return
 	}
 
-	room := h.getRoom(roomID)
+	log.Printf("Yjs connection attempt for room: %s", roomID)
+
+	baseRoomID := strings.Split(roomID, "-stage")[0]
+
+	room := h.getRoom(baseRoomID)
 	if room == nil {
 		log.Printf("Room %s not found for Yjs connection", roomID)
 		conn.Close()
 		return
 	}
+	clientMutex := &sync.Mutex{}
 
 	room.mu.Lock()
-	room.yjsClients[conn] = true
+	room.yjsClients[conn] = clientMutex
+	clientCount := len(room.yjsClients)
 	room.mu.Unlock()
 
-	log.Printf("Yjs client connected to room %s", roomID)
+	log.Printf("Yjs client connected to room %s (total: %d)", roomID, clientCount)
 
 	defer func() {
 		room.mu.Lock()
@@ -1083,157 +1294,22 @@ func (h *Hub) handleYjsConnection(w http.ResponseWriter, r *http.Request, conn *
 		}
 
 		room.mu.RLock()
-		for client := range room.yjsClients {
+		for client, clientMu := range room.yjsClients {
 			if client != conn {
-				go func(c *websocket.Conn) {
-					c.SetWriteDeadline(time.Now().Add(writeWait))
-					if err := c.WriteMessage(messageType, message); err != nil {
+				targetClient := client
+				targetMu := clientMu
+
+				go func() {
+					targetMu.Lock()
+					defer targetMu.Unlock()
+
+					targetClient.SetWriteDeadline(time.Now().Add(writeWait))
+					if err := targetClient.WriteMessage(messageType, message); err != nil {
 						log.Printf("Error broadcasting Yjs message: %v", err)
 					}
-				}(client)
+				}()
 			}
 		}
 		room.mu.RUnlock()
 	}
 }
-
-// ✅ SABOTAGE HANDLERS
-
-func (r *Room) handleSabotage(playerID, sabotageType string) {
-	r.mu.Lock()
-	
-	// Verify player is impostor (already validated in client.go)
-	player := r.players[playerID]
-	if player == nil || player.Role != "IMPOSTER" {
-		r.mu.Unlock()
-		log.Printf("❌ Invalid sabotage attempt: %s", playerID)
-		return
-	}
-	
-	// Check if sabotage already active
-	if r.sabotageActive {
-		r.mu.Unlock()
-		log.Printf("⚠️ Sabotage already active")
-		return
-	}
-	
-	r.sabotageActive = true
-	r.sabotageType = sabotageType
-	
-	log.Printf("💀 SABOTAGE: %s activated %s", player.Username, sabotageType)
-	
-	r.mu.Unlock()
-	
-	switch sabotageType {
-	case "FREEZE":
-		r.handleFreezeSabotage()
-		
-	case "CORRUPT":
-		r.handleCorruptSabotage()
-		
-	default:
-		log.Printf("⚠️ Unknown sabotage type: %s", sabotageType)
-		r.mu.Lock()
-		r.sabotageActive = false
-		r.mu.Unlock()
-	}
-}
-
-func (r *Room) handleFreezeSabotage() {
-	log.Printf("❄️ FREEZE sabotage activated - 5 second lockout")
-	
-	// Broadcast freeze event
-	freezeMsg := Message{
-		Type: "SABOTAGE_STARTED",
-		Data: map[string]interface{}{
-			"type":     "FREEZE",
-			"duration": 5000, // milliseconds
-		},
-	}
-	data, _ := json.Marshal(freezeMsg)
-	r.broadcast <- data
-	
-	// Broadcast chat message
-	chatMsg := Message{
-		Type: "CHAT",
-		Data: map[string]interface{}{
-			"username": "System",
-			"text":     "⚠️ SYSTEM JAMMED - Communications frozen!",
-			"system":   true,
-		},
-	}
-	chatData, _ := json.Marshal(chatMsg)
-	r.broadcast <- chatData
-	
-	// Auto-resolve after 5 seconds
-	go func() {
-		time.Sleep(5 * time.Second)
-		
-		r.mu.Lock()
-		r.sabotageActive = false
-		r.sabotageType = ""
-		r.mu.Unlock()
-		
-		// Broadcast freeze end
-		endMsg := Message{
-			Type: "SABOTAGE_ENDED",
-			Data: map[string]interface{}{
-				"type": "FREEZE",
-			},
-		}
-		endData, _ := json.Marshal(endMsg)
-		r.broadcast <- endData
-		
-		// Chat notification
-		chatMsg := Message{
-			Type: "CHAT",
-			Data: map[string]interface{}{
-				"username": "System",
-				"text":     "✅ Systems restored - Communications online",
-				"system":   true,
-			},
-		}
-		chatData, _ := json.Marshal(chatMsg)
-		r.broadcast <- chatData
-		
-		log.Printf("✅ FREEZE sabotage ended")
-	}()
-}
-
-func (r *Room) handleCorruptSabotage() {
-	log.Printf("🦠 CORRUPT sabotage activated - injecting malware")
-	
-	malwareText := "\n// ⚠️ MALWARE DETECTED - REMOVE THIS LINE TO COMPILE\n// SYSTEM_FAILURE_CODE_0x00FF\n"
-	
-	// Broadcast corruption event
-	corruptMsg := Message{
-		Type: "SABOTAGE_CORRUPT",
-		Data: map[string]interface{}{
-			"malware": malwareText,
-			"action":  "INJECT_AT_TOP",
-		},
-	}
-	data, _ := json.Marshal(corruptMsg)
-	r.broadcast <- data
-	
-	// Broadcast chat message
-	chatMsg := Message{
-		Type: "CHAT",
-		Data: map[string]interface{}{
-			"username": "System",
-			"text":     "🦠 MALWARE DETECTED - Code corrupted!",
-			"system":   true,
-		},
-	}
-	chatData, _ := json.Marshal(chatMsg)
-	r.broadcast <- chatData
-	
-	// Mark as resolved (it's permanent until they fix it)
-	r.mu.Lock()
-	r.sabotageActive = false
-	r.sabotageType = ""
-	r.mu.Unlock()
-	
-	log.Printf("🦠 CORRUPT sabotage injected - players must remove malware manually")
-}
-

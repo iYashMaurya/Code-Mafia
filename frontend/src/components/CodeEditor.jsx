@@ -8,7 +8,6 @@ import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { MonacoBinding } from 'y-monaco';
 
-// Import modular UI components
 import TaskPanel from './game/TaskPanel';
 import ControlPanel from './game/ControlPanel';
 import SabotagePanel from './game/SabotagePanel';
@@ -23,11 +22,13 @@ export default function CodeEditor({ onEmergency }) {
   const terminalEndRef = useRef(null);
   
   const [editorReady, setEditorReady] = useState(false);
+  
+  // ✅ FIX: Persistent Yjs refs (don't recreate on every stage change)
   const yjsProviderRef = useRef(null);
   const yjsBindingRef = useRef(null);
   const yjsDocRef = useRef(null);
+  const awarenessTimerRef = useRef(null);
 
-  // SABOTAGE STATE
   const [isFrozen, setIsFrozen] = useState(false);
   const [sabotageType, setSabotageType] = useState(null);
   const [freezeTimeLeft, setFreezeTimeLeft] = useState(0);
@@ -52,7 +53,7 @@ export default function CodeEditor({ onEmergency }) {
     });
   }, [state.messages]);
 
-  // SABOTAGE LISTENER
+  // Sabotage listeners
   useEffect(() => {
     if (!state.ws) return;
 
@@ -60,7 +61,6 @@ export default function CodeEditor({ onEmergency }) {
       try {
         const message = JSON.parse(event.data);
 
-        // FREEZE SABOTAGE
         if (message.type === 'SABOTAGE_STARTED' && message.data.type === 'FREEZE') {
           console.log('❄️ FREEZE sabotage activated!');
           setIsFrozen(true);
@@ -69,7 +69,6 @@ export default function CodeEditor({ onEmergency }) {
           const duration = message.data.duration || 5000;
           setFreezeTimeLeft(Math.floor(duration / 1000));
           
-          // Countdown timer
           const countdownInterval = setInterval(() => {
             setFreezeTimeLeft(prev => {
               if (prev <= 1) {
@@ -80,7 +79,6 @@ export default function CodeEditor({ onEmergency }) {
             });
           }, 1000);
           
-          // Auto-unfreeze
           setTimeout(() => {
             setIsFrozen(false);
             setSabotageType(null);
@@ -88,7 +86,6 @@ export default function CodeEditor({ onEmergency }) {
           }, duration);
         }
 
-        // FREEZE END
         if (message.type === 'SABOTAGE_ENDED' && message.data.type === 'FREEZE') {
           console.log('✅ FREEZE sabotage ended');
           setIsFrozen(false);
@@ -96,7 +93,6 @@ export default function CodeEditor({ onEmergency }) {
           setFreezeTimeLeft(0);
         }
 
-        // CORRUPT SABOTAGE
         if (message.type === 'SABOTAGE_CORRUPT') {
           console.log('🦠 CORRUPT sabotage - injecting malware');
           
@@ -120,44 +116,44 @@ export default function CodeEditor({ onEmergency }) {
     return () => state.ws?.removeEventListener('message', handleSabotage);
   }, [state.ws]);
 
-  // Yjs initialization
+  // ✅ FIX: Proper Yjs initialization with stage handling
   useEffect(() => {
     if (!state.roomId || !editorReady || !editorRef.current || !state.task) {
+      console.log('⏳ Waiting for editor readiness...');
       return;
     }
 
-    // Cleanup previous stage
-    if (yjsProviderRef.current) {
-      const prevStage = yjsDocRef.current?.getText('monaco').toString();
-      console.log(`🧹 Cleanup Stage ${currentStage - 1} (${prevStage?.length || 0} chars)`);
-      
-      if (yjsBindingRef.current) {
-        yjsBindingRef.current.destroy();
-        yjsBindingRef.current = null;
-      }
-      if (yjsProviderRef.current) {
-        yjsProviderRef.current.disconnect();
-        yjsProviderRef.current.destroy();
-        yjsProviderRef.current = null;
-      }
-      if (yjsDocRef.current) {
-        yjsDocRef.current.destroy();
-        yjsDocRef.current = null;
-      }
-    }
-
-    console.log('🔄 Initializing Yjs for Stage', currentStage);
-
     const model = editorRef.current.getModel();
-    if (model) {
-      model.setValue('');
+    if (!model) {
+      console.error('❌ Monaco model not found!');
+      return;
     }
 
+    console.log('🔄 Setting up Yjs for Stage', currentStage);
+
+    // ✅ Clean up previous binding (but keep provider alive)
+    if (yjsBindingRef.current) {
+      console.log('🧹 Destroying old binding');
+      yjsBindingRef.current.destroy();
+      yjsBindingRef.current = null;
+    }
+
+    // ✅ Create NEW doc for new stage (each stage has its own document)
+    if (yjsDocRef.current) {
+      yjsDocRef.current.destroy();
+    }
     const doc = new Y.Doc();
     yjsDocRef.current = doc;
     
     const yjsRoomId = `${state.roomId}-stage${currentStage}`;
     const wsUrl = 'ws://localhost:8080/yjs';
+    
+    // ✅ Create provider for this stage
+    if (yjsProviderRef.current) {
+      console.log('🧹 Disconnecting old provider');
+      yjsProviderRef.current.disconnect();
+      yjsProviderRef.current.destroy();
+    }
     
     const provider = new WebsocketProvider(
       wsUrl,
@@ -171,39 +167,43 @@ export default function CodeEditor({ onEmergency }) {
     yjsProviderRef.current = provider;
 
     const yText = doc.getText('monaco');
+    
+    // ✅ Set initial template when doc is empty
     let templateLoaded = false;
     
     provider.on('sync', (isSynced) => {
-      if (isSynced && !templateLoaded && yText.toString() === '') {
-        console.log('📝 Setting initial template for Stage', currentStage);
-        yText.insert(0, state.task.template);
-        templateLoaded = true;
+      if (isSynced) {
+        console.log('✅ Yjs synced for Stage', currentStage);
+        
+        // Only load template if document is truly empty
+        if (!templateLoaded && yText.toString().trim() === '') {
+          console.log('📝 Loading template (document empty)');
+          yText.insert(0, state.task.template);
+          templateLoaded = true;
+        }
       }
     });
     
+    // Fallback: load template after brief delay if still empty
     setTimeout(() => {
-      if (!templateLoaded && yText.toString() === '') {
-        console.log('📝 Setting initial template (first connection) for Stage', currentStage);
+      if (!templateLoaded && yText.toString().trim() === '') {
+        console.log('📝 Loading template (fallback)');
         yText.insert(0, state.task.template);
         templateLoaded = true;
       }
     }, 500);
 
-    const editorModel = editorRef.current.getModel();
-    if (!editorModel) {
-      console.error('❌ Monaco model not found!');
-      return;
-    }
-
+    // ✅ Create Monaco binding
     console.log('🔗 Creating Monaco binding for Stage', currentStage);
     const binding = new MonacoBinding(
       yText,
-      editorModel,
+      model,
       new Set([editorRef.current]),
       provider.awareness
     );
     yjsBindingRef.current = binding;
 
+    // ✅ Set awareness (cursor colors)
     const playerIndex = playerList.findIndex(p => p.id === state.playerId);
     const userColor = getPlayerColor(playerIndex);
     
@@ -213,18 +213,45 @@ export default function CodeEditor({ onEmergency }) {
       colorLight: userColor + '80',
     });
 
+    // ✅ Keep awareness alive (heartbeat)
+    if (awarenessTimerRef.current) {
+      clearInterval(awarenessTimerRef.current);
+    }
+    awarenessTimerRef.current = setInterval(() => {
+      if (provider && provider.awareness && !state.isEliminated) {
+        // Touch awareness to keep it alive
+        provider.awareness.setLocalStateField('user', {
+          name: state.username || 'Anonymous',
+          color: userColor,
+          colorLight: userColor + '80',
+        });
+      }
+    }, 5000); // Every 5 seconds
+
+    // ✅ Cleanup on unmount or stage change
     return () => {
-      console.log('🧹 Cleaning up Yjs connection for Stage', currentStage);
+      console.log('🧹 Cleaning up Yjs for Stage', currentStage);
+      
+      if (awarenessTimerRef.current) {
+        clearInterval(awarenessTimerRef.current);
+      }
       
       if (yjsBindingRef.current) {
         yjsBindingRef.current.destroy();
         yjsBindingRef.current = null;
       }
+      
+      // Don't destroy provider immediately - wait a bit in case of quick stage transitions
       if (yjsProviderRef.current) {
-        yjsProviderRef.current.disconnect();
-        yjsProviderRef.current.destroy();
-        yjsProviderRef.current = null;
+        setTimeout(() => {
+          if (yjsProviderRef.current) {
+            yjsProviderRef.current.disconnect();
+            yjsProviderRef.current.destroy();
+            yjsProviderRef.current = null;
+          }
+        }, 100);
       }
+      
       if (yjsDocRef.current) {
         yjsDocRef.current.destroy();
         yjsDocRef.current = null;
@@ -239,6 +266,7 @@ export default function CodeEditor({ onEmergency }) {
     const shouldBeReadOnly = state.isEliminated || isFrozen;
     editorRef.current.updateOptions({ readOnly: shouldBeReadOnly });
     
+    // ✅ Remove awareness when eliminated
     if (state.isEliminated && yjsProviderRef.current) {
       yjsProviderRef.current.awareness.setLocalState(null);
     }
@@ -323,7 +351,7 @@ export default function CodeEditor({ onEmergency }) {
     <div className="min-h-screen relative">
       <Starfield />
       
-      {/* FREEZE SABOTAGE OVERLAY */}
+      {/* FREEZE OVERLAY */}
       <AnimatePresence>
         {isFrozen && (
           <motion.div
@@ -387,10 +415,9 @@ export default function CodeEditor({ onEmergency }) {
       </AnimatePresence>
       
       <div className="relative z-10 p-4">
-        {/* Header with Timer and Controls */}
+        {/* Header */}
         <div className="flex justify-between items-center mb-4">
           <div className="flex gap-4 items-center">
-            {/* Stage Progress */}
             <div className="panel-space-sm px-6 py-3">
               <div className="flex items-center gap-3">
                 <span className="font-pixel text-xl text-gray-900">
@@ -446,7 +473,6 @@ export default function CodeEditor({ onEmergency }) {
               )}
             </motion.div>
             
-            {/* Spectator Badge */}
             {state.isEliminated && (
               <motion.div
                 initial={{ scale: 0 }}
@@ -460,7 +486,6 @@ export default function CodeEditor({ onEmergency }) {
             )}
           </div>
 
-          {/* Emergency Meeting Button */}
           <motion.button
             onClick={onEmergency}
             disabled={state.isEliminated}
@@ -472,11 +497,10 @@ export default function CodeEditor({ onEmergency }) {
           </motion.button>
         </div>
 
-        {/* Main Grid Layout */}
+        {/* Main Grid */}
         <div className="grid grid-cols-4 gap-4 h-[calc(100vh-120px)]">
           {/* Left Sidebar */}
           <div className="col-span-1 flex flex-col gap-4">
-            {/* Impostor or Civilian Panel */}
             {isImpostor ? (
               <SabotagePanel 
                 onSabotage={handleSabotage} 
@@ -497,16 +521,14 @@ export default function CodeEditor({ onEmergency }) {
               />
             )}
 
-            {/* Players List */}
             <PlayersList 
               players={state.players} 
               currentPlayerId={state.playerId} 
             />
           </div>
 
-          {/* Main Content Area */}
+          {/* Main Content */}
           <div className="col-span-3 flex flex-col gap-4">
-            {/* Task Description */}
             <TaskPanel task={state.task} />
 
             {/* Code Editor */}
@@ -537,7 +559,6 @@ export default function CodeEditor({ onEmergency }) {
               />
             </div>
 
-            {/* Chat Panel */}
             <ChatPanel
               messages={state.messages}
               chatMessage={chatMessage}

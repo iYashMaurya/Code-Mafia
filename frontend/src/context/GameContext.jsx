@@ -196,7 +196,7 @@ function gameReducer(state, action) {
         terminalLogs: [
           ...state.terminalLogs.slice(-50),  // ✅ Keep last 50 only
           `❌ ${action.payload.message}`,
-          `⏳ ${action.payload.runner} is currently running tests...`,
+          `⏳ Another player is currently running tests...`,
         ],
       };
     
