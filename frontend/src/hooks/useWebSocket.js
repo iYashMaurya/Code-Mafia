@@ -19,7 +19,8 @@ const getUserId = () => {
 export function useWebSocket(roomId) {
   const { state, dispatch } = useGame();
 
-  const BASE_URL = import.meta.env.VITE_WEBSOCKET_URL || 'ws://localhost:8080';
+  const WS_BASE =
+  import.meta.env.VITE_WS_URL || 'ws://localhost:8080';
 
   useEffect(() => {
     if (!roomId) {
@@ -31,7 +32,7 @@ export function useWebSocket(roomId) {
 
     console.log('Connecting to room:', roomId, 'with userId:', userId);
     
-    const ws = new WebSocket(`ws://localhost:8080/ws?room=${roomId}&userId=${userId}`);
+    const ws = new WebSocket(`${WS_BASE}/ws?room=${roomId}&userId=${userId}`);
 
     ws.onopen = () => {
       console.log('WebSocket connected');

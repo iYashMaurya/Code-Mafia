@@ -43,7 +43,8 @@ export default function CodeEditor({ onEmergency }) {
   const tasksComplete = state.tasksComplete;
 
 
-  const BASE_URL = import.meta.env.VITE_WEBSOCKET_URL || 'ws://localhost:8080';
+  const WS_BASE =
+  import.meta.env.VITE_WS_URL || 'ws://localhost:8080';
 
 
   // Auto-scroll chat
@@ -149,7 +150,7 @@ export default function CodeEditor({ onEmergency }) {
     yjsDocRef.current = doc;
     
     const yjsRoomId = `${state.roomId}-stage${currentStage}`;
-    const wsUrl = `${BASE_URL}/yjs`;
+    const wsUrl = `${WS_BASE}/yjs`;
     
     // ✅ Create provider for this stage
     if (yjsProviderRef.current) {
