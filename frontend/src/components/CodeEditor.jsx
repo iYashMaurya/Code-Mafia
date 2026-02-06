@@ -23,7 +23,6 @@ export default function CodeEditor({ onEmergency }) {
   
   const [editorReady, setEditorReady] = useState(false);
   
-  // ✅ FIX: Persistent Yjs refs (don't recreate on every stage change)
   const yjsProviderRef = useRef(null);
   const yjsBindingRef = useRef(null);
   const yjsDocRef = useRef(null);
@@ -42,6 +41,10 @@ export default function CodeEditor({ onEmergency }) {
   const currentStage = state.currentStage;
   const timerSeconds = state.timerSeconds;
   const tasksComplete = state.tasksComplete;
+
+
+  const BASE_URL = import.meta.env.VITE_WEBSOCKET_URL || 'ws://localhost:8080';
+
 
   // Auto-scroll chat
   useEffect(() => {
@@ -146,7 +149,7 @@ export default function CodeEditor({ onEmergency }) {
     yjsDocRef.current = doc;
     
     const yjsRoomId = `${state.roomId}-stage${currentStage}`;
-    const wsUrl = 'ws://localhost:8080/yjs';
+    const wsUrl = `${BASE_URL}/yjs`;
     
     // ✅ Create provider for this stage
     if (yjsProviderRef.current) {

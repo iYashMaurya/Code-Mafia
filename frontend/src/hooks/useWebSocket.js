@@ -19,6 +19,8 @@ const getUserId = () => {
 export function useWebSocket(roomId) {
   const { state, dispatch } = useGame();
 
+  const BASE_URL = import.meta.env.VITE_WEBSOCKET_URL || 'ws://localhost:8080';
+
   useEffect(() => {
     if (!roomId) {
       console.log('⚠️ No roomId provided');
