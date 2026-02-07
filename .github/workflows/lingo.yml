@@ -33,11 +33,11 @@ jobs:
       - name: Extract & Auto-Translate
         working-directory: ./frontend
         env:
-
-          LINGO_API_KEY: ${{ secrets.LINGO_API_KEY }} 
+          LINGO_API_KEY: ${{ secrets.LINGO_API_KEY }}
+          LINGODOTDEV_API_KEY: ${{ secrets.LINGO_API_KEY }} 
         run: |
-          npx lingo extract
-          npx lingo translate --auto
+          # Use the script we just fixed in package.json
+          npm run lingo:sync
           
       - name: Commit Updated Translations
         uses: stefanzweifel/git-auto-commit-action@v5

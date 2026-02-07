@@ -1,7 +1,7 @@
 {
   "version": "1.12",
   "locale": {
-    "source": "fr",
+    "source": "en",
     "targets": [
       "es"
     ]
@@ -9,7 +9,7 @@
   "buckets": {
     "json": {
       "include": [
-        "i18n/[locale].json"
+        "src/lingo/cache/[locale].json"
       ]
     }
   },

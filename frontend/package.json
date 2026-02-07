@@ -8,9 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "lingo:setup": "lingo init",
-  "lingo:extract": "lingo extract",
-  "lingo:translate": "lingo translate --auto",
-  "lingo:sync": "lingo extract && lingo translate --auto"
+    "lingo:sync": "lingo run", 
+    "lingo:check": "lingo run --dry-run"
   },
   "dependencies": {
     "@lingo.dev/compiler": "^0.3.6",
