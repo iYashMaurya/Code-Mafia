@@ -97,7 +97,7 @@ Sleep            █░░░░░░░░░ (Who needs it?)
 
 Want to see how everything connects? Check out our high-level architecture diagram:
 
-<img width="5335" height="2076" alt="High-level-architecture" src="https://github.com/user-attachments/assets/f3e4946c-860e-4d70-9f9e-791e6095eda3" />
+<img width="5710" height="3139" alt="High-level-architecture (1)" src="https://github.com/user-attachments/assets/2978ebf8-42bd-40b1-968f-b5f797649ed2" />
 
 
 ## 📂 PROJECT STRUCTURE
@@ -174,8 +174,7 @@ Spins up Backend, Frontend, and Redis automatically.
 docker-compose up --build
 ```
 
-- **Frontend** → http://localhost:5173
-- **Backend** → http://localhost:8080
+- **Frontend** → http://localhost/
 
 ### 5️⃣ Option B: "I like to control everything" (Manual)
 
