@@ -213,6 +213,21 @@ function gameReducer(state, action) {
     case 'CLEAR_MESSAGES':
       return { ...state, messages: [] };
     
+    // 🔥 NEW: Handle translation updates
+    case 'UPDATE_MESSAGE_TRANSLATION':
+      return {
+        ...state,
+        messages: state.messages.map(m => 
+          m.messageId === action.payload.messageId 
+            ? { 
+                ...m, 
+                translations: { ...m.translations, ...action.payload.translations }, 
+                translationId: Date.now() // Force re-render with new key
+              } 
+            : m
+        )
+      };
+    
     case 'RESET':
       return {
         ...initialState,

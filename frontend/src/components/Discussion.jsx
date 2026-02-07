@@ -1,9 +1,39 @@
 'use i18n';
 import React, { useState, useEffect, useRef } from 'react';
 import { useGame } from '../context/GameContext';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import Starfield from './Starfield';
 import Ship, { getShipType } from './Ship';
+
+// ChatBubble component with translation animation
+const ChatBubble = ({ message, userLang }) => {
+  return (
+    <div className="chat-message-space relative">
+      <span className="font-game text-lg font-bold text-orange">
+        {message.username}:
+      </span>
+      
+      {/* The Magic: AnimatePresence allows the old text to exit while new enters */}
+      <div className="inline-block ml-2 relative">
+        <AnimatePresence mode='wait'>
+          <motion.span
+            key={message.translationId || 'original'} // Key change triggers animation
+            initial={{ opacity: 0, filter: 'blur(5px)' }}
+            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, position: 'absolute' }}
+            transition={{ duration: 0.5 }} // The "Cinematic" speed
+            className="font-game text-lg text-gray-900"
+          >
+            {/* Show translation if available and matches user lang, else show original */}
+            {message.translations && message.translations[userLang] 
+              ? message.translations[userLang] 
+              : message.text}
+          </motion.span>
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+};
 
 export default function Discussion({ onVote }) {
   const { state, dispatch } = useGame();
@@ -16,6 +46,7 @@ export default function Discussion({ onVote }) {
   const playerList = Object.values(state.players || {}).filter(p => !p.isEliminated);
   const currentPlayer = state.players?.[state.playerId];
   const canVote = !hasVoted && currentPlayer && !currentPlayer.isEliminated;
+  const userLang = state.language || 'en';
 
   // Auto-scroll chat
   useEffect(() => {
@@ -38,6 +69,17 @@ export default function Discussion({ onVote }) {
             handleVoteSubmit('SKIP');
           }
         }
+
+        // 🔥 NEW: Handle translation updates
+        if (message.type === 'TRANSLATION_UPDATE') {
+          dispatch({
+            type: 'UPDATE_MESSAGE_TRANSLATION',
+            payload: {
+              messageId: message.data.messageId,
+              translations: message.data.translations,
+            }
+          });
+        }
       } catch (error) {
         console.error('Error parsing voting timer message:', error);
       }
@@ -47,7 +89,7 @@ export default function Discussion({ onVote }) {
     return () => {
       state.ws?.removeEventListener('message', handleMessage);
     };
-  }, [state.ws, hasVoted]);
+  }, [state.ws, hasVoted, dispatch]);
 
   // Reset state when entering discussion phase
   useEffect(() => {
@@ -179,24 +221,21 @@ export default function Discussion({ onVote }) {
               </div>
             </div>
 
-            {/* Right - Chat Panel */}
+            {/* Right - Chat Panel with Translations */}
             <div className="col-span-1">
               <div className="panel-space h-[600px] flex flex-col">
                 <h3 className="font-pixel text-lg mb-3 text-gray-900">DISCUSSION</h3>
                 
-                {/* Messages */}
+                {/* Messages with Translation Animation */}
                 <div className="flex-1 overflow-y-auto mb-3 space-y-2 min-h-0 bg-white/30 p-3 rounded border-2 border-brown-dark">
                   {state.messages.map((msg, index) => (
-                    <div key={index} className="chat-message-space">
+                    <div key={msg.messageId || index}>
                       {msg.system ? (
-                        <span className="font-game text-lg italic text-gray-600">{msg.text}</span>
+                        <div className="chat-message-space">
+                          <span className="font-game text-lg italic text-gray-600">{msg.text}</span>
+                        </div>
                       ) : (
-                        <>
-                          <span className="font-game text-lg font-bold text-orange">
-                            {msg.username}:
-                          </span>
-                          <span className="font-game text-lg ml-2 text-gray-900">{msg.text}</span>
-                        </>
+                        <ChatBubble message={msg} userLang={userLang} />
                       )}
                     </div>
                   ))}
