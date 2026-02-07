@@ -48,9 +48,8 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	roomID := r.URL.Query().Get("room")
-	userID := r.URL.Query().Get("userId") 
+	userID := r.URL.Query().Get("userId")
 
 	var playerID string
 	var isReconnect bool
@@ -269,7 +268,27 @@ func (c *Client) handleMessage(message []byte) {
 		room.mu.RUnlock()
 
 		if player != nil && !player.IsEliminated {
-			room.broadcast <- message
+			data, ok := msg.Data.(map[string]interface{})
+			if !ok {
+				return
+			}
+
+			text, ok := data["text"].(string)
+			if !ok || text == "" {
+				return
+			}
+
+			// 🔥 REMOVED: Don't broadcast immediately
+			// room.broadcast <- message
+
+			// 🔥 NEW: Only trigger translation pipeline
+			// Translation service will broadcast when ready
+			go c.hub.handleChatMessage(
+				c.RoomID,
+				c.PlayerID,
+				c.Username,
+				text,
+			)
 		}
 
 	case "EMERGENCY":

@@ -1,9 +1,35 @@
 'use i18n';
 import React, { useState, useEffect, useRef } from 'react';
 import { useGame } from '../context/GameContext';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import Starfield from './Starfield';
 import Ship, { getShipType } from './Ship';
+
+// 🔥 ChatBubble component with translation animation
+const ChatBubble = ({ message, userLang }) => {
+  return (
+    <div className="mb-2 p-2 bg-white/50 rounded border-2 border-brown-dark">
+      <span className="font-game text-base font-bold text-orange block mb-1">
+        {message.username}:
+      </span>
+      
+      <AnimatePresence mode='wait'>
+        <motion.span
+          key={message.translationId || 'original'}
+          initial={{ opacity: 0, filter: 'blur(3px)' }}
+          animate={{ opacity: 1, filter: 'blur(0px)' }}
+          exit={{ opacity: 0, position: 'absolute' }}
+          transition={{ duration: 0.4 }}
+          className="font-game text-base text-gray-900 block"
+        >
+          {message.translations && message.translations[userLang] 
+            ? message.translations[userLang] 
+            : message.text}
+        </motion.span>
+      </AnimatePresence>
+    </div>
+  );
+};
 
 export default function Discussion({ onVote }) {
   const { state, dispatch } = useGame();
@@ -16,6 +42,7 @@ export default function Discussion({ onVote }) {
   const playerList = Object.values(state.players || {}).filter(p => !p.isEliminated);
   const currentPlayer = state.players?.[state.playerId];
   const canVote = !hasVoted && currentPlayer && !currentPlayer.isEliminated;
+  const userLang = state.language || 'en';
 
   // Auto-scroll chat
   useEffect(() => {
@@ -33,10 +60,20 @@ export default function Discussion({ onVote }) {
         if (message.type === 'VOTING_TIMER') {
           setTimeLeft(message.data.seconds);
           
-          // Auto-submit skip if time runs out and haven't voted
           if (message.data.seconds === 0 && !hasVoted) {
             handleVoteSubmit('SKIP');
           }
+        }
+
+        // Handle translation updates
+        if (message.type === 'TRANSLATION_UPDATE') {
+          dispatch({
+            type: 'UPDATE_MESSAGE_TRANSLATION',
+            payload: {
+              messageId: message.data.messageId,
+              translations: message.data.translations,
+            }
+          });
         }
       } catch (error) {
         console.error('Error parsing voting timer message:', error);
@@ -47,7 +84,7 @@ export default function Discussion({ onVote }) {
     return () => {
       state.ws?.removeEventListener('message', handleMessage);
     };
-  }, [state.ws, hasVoted]);
+  }, [state.ws, hasVoted, dispatch]);
 
   // Reset state when entering discussion phase
   useEffect(() => {
@@ -58,14 +95,12 @@ export default function Discussion({ onVote }) {
     }
   }, [state.phase]);
 
-  // Handle Vote
   const handleVoteSubmit = (targetID) => {
     if (hasVoted) return;
     setHasVoted(true);
     onVote(targetID);
   };
 
-  // Helper to check if a player has voted
   const hasPlayerVoted = (playerId) => {
     return state.votesStatus?.[playerId] || false;
   };
@@ -135,7 +170,6 @@ export default function Discussion({ onVote }) {
                         </span>
                       </div>
                       
-                      {/* Vote Indicator */}
                       {hasPlayerVoted(player.id) && (
                         <div className="flex items-center gap-1">
                           <div className="w-3 h-3 bg-green-600 rounded-full border-2 border-brown-dark"></div>
@@ -179,24 +213,21 @@ export default function Discussion({ onVote }) {
               </div>
             </div>
 
-            {/* Right - Chat Panel */}
+            {/* Right - Chat Panel with Translations - 🔥 IMPROVED SIZE */}
             <div className="col-span-1">
-              <div className="panel-space h-[600px] flex flex-col">
+              <div className="panel-space h-[700px] flex flex-col"> {/* 🔥 Increased from h-[600px] */}
                 <h3 className="font-pixel text-lg mb-3 text-gray-900">DISCUSSION</h3>
                 
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto mb-3 space-y-2 min-h-0 bg-white/30 p-3 rounded border-2 border-brown-dark">
-                  {state.messages.map((msg, index) => (
-                    <div key={index} className="chat-message-space">
+                {/* Messages with Translation Animation - 🔥 NO DUPLICATES */}
+                <div className="flex-1 overflow-y-auto mb-3 space-y-1 min-h-0 bg-white/30 p-3 rounded border-2 border-brown-dark">
+                  {state.messages.map((msg) => ( // 🔥 Use messageId as key
+                    <div key={msg.messageId || msg.timestamp || Math.random()}>
                       {msg.system ? (
-                        <span className="font-game text-lg italic text-gray-600">{msg.text}</span>
+                        <div className="mb-2 p-2 bg-gray-100 rounded border-2 border-gray-400">
+                          <span className="font-game text-sm italic text-gray-700">{msg.text}</span>
+                        </div>
                       ) : (
-                        <>
-                          <span className="font-game text-lg font-bold text-orange">
-                            {msg.username}:
-                          </span>
-                          <span className="font-game text-lg ml-2 text-gray-900">{msg.text}</span>
-                        </>
+                        <ChatBubble message={msg} userLang={userLang} />
                       )}
                     </div>
                   ))}
@@ -211,7 +242,7 @@ export default function Discussion({ onVote }) {
                     onChange={(e) => setChatMessage(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
                     placeholder="Discuss..."
-                    className="input-space flex-1 text-lg py-2"
+                    className="input-space flex-1 text-base py-2" 
                   />
                   <button
                     onClick={handleSendMessage}
