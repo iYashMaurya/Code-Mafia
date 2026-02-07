@@ -125,8 +125,8 @@ You want to run this locally?
 ### 1️⃣ Clone the Repository
 
 ```bash
-git clone https://github.com/iYashMaurya/Code-Us.git
-cd Code-Us
+git clone https://github.com/iYashMaurya/Code-Mafia.git
+cd Code-Mafia
 ```
 
 ### 2️⃣ Prerequisites
