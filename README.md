@@ -99,6 +99,9 @@ Want to see how everything connects? Check out our high-level architecture diagr
 
 <img width="5710" height="3139" alt="High-level-architecture (1)" src="https://github.com/user-attachments/assets/2978ebf8-42bd-40b1-968f-b5f797649ed2" />
 
+## 🏗️ DEMO
+
+Demo Link:- https://www.loom.com/share/a56a54b6d2c942c1acf0ad0f4944d851
 
 ## 📂 PROJECT STRUCTURE
 
